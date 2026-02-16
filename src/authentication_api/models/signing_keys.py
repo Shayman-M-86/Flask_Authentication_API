@@ -2,12 +2,14 @@ import base64
 import os
 import time
 from logging import getLogger
+from typing import Any
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Boolean, Integer, LargeBinary, String, update
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.authentication_api.extensions import db
@@ -15,7 +17,31 @@ from src.authentication_api.extensions import db
 log = getLogger(__name__)
 
 
+# -------------------- domain exceptions --------------------
+
+
+class SigningKeyError(RuntimeError):
+    """Base error for signing-key operations."""
+
+
+class SigningKeyNotFound(SigningKeyError):
+    """No key exists / not found in DB."""
+
+
+class SigningKeyCryptoError(SigningKeyError):
+    """Key serialization/decryption errors."""
+
+
+class SigningKeyDBError(SigningKeyError):
+    """DB query/commit/rollback errors."""
+
+
+# -------------------- SQLAlchemy model --------------------
+
+
 class RsaSigningKeysDB(db.Model):
+    """SQLAlchemy model storing Ed25519 signing key material and metadata."""
+
     __tablename__ = "rsa_signing_keys"
     key_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     private_pem: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
@@ -28,20 +54,26 @@ class RsaSigningKeysDB(db.Model):
     signing_deactivate_after: Mapped[int] = mapped_column(Integer, nullable=False)
     public_jwk: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
-    def db_entry(self, Rsakeys: "RsaSigningKeys") -> None:
-        self.key_id = Rsakeys.key_id
-        self.private_pem = Rsakeys.private_pem
-        self.public_pem = Rsakeys.public_pem
-        self.alg = Rsakeys.alg
-        self.is_active = Rsakeys.is_active
-        self.created_at = Rsakeys.created_at
-        self.expires_at = Rsakeys.expires_at
-        self.verify_until = Rsakeys.verify_until
-        self.signing_deactivate_after = Rsakeys.signing_deactivate_after
-        self.public_jwk = Rsakeys.public_jwk
+    def db_entry(self, rsakeys: "RsaSigningKeys") -> None:
+        """Populate this DB record from a RsaSigningKeys value object."""
+        self.key_id = rsakeys.key_id
+        self.private_pem = rsakeys.private_pem
+        self.public_pem = rsakeys.public_pem
+        self.alg = rsakeys.alg
+        self.is_active = rsakeys.is_active
+        self.created_at = rsakeys.created_at
+        self.expires_at = rsakeys.expires_at
+        self.verify_until = rsakeys.verify_until
+        self.signing_deactivate_after = rsakeys.signing_deactivate_after
+        self.public_jwk = rsakeys.public_jwk
+
+
+# -------------------- Pydantic model --------------------
 
 
 class RsaSigningKeys(BaseModel):
+    """In-memory representation of an Ed25519 signing key pair and metadata."""
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     key_id: str
@@ -53,74 +85,52 @@ class RsaSigningKeys(BaseModel):
     expires_at: int
     verify_until: int
     signing_deactivate_after: int
-    public_jwk: dict
+    public_jwk: dict[str, Any]
 
     private_key: ed25519.Ed25519PrivateKey
     public_key: ed25519.Ed25519PublicKey
 
 
+# -------------------- manager --------------------
+
+
 class RsaSigningKeysManager:
+    """Create, persist, load, and rotate Ed25519 signing keys."""
+
     def __init__(self, secret_password: str):
+        """Initialize the manager with the password used to encrypt private keys."""
         self.secret_password = secret_password
 
-    def _initial_new_keys(self) -> None:
-        private_key = self._private_key_init(self.secret_password)
-        public_key = self._public_key_init(private_key)
-        private_pem: bytes = self._encrypt_private_key(
-            private_key, self.secret_password
-        )
-        public_pem: bytes = self._encoded_public_key(public_key)
-        alg = "EdDSA"
-        key_id: str = os.urandom(32).hex()  # Random key ID for tracking
-        is_active = True
-        created_at = int(time.time())
-        verify_until = (
-            created_at + 182 * 24 * 3600
-        )  # Set verification validity to 182 days
-        signing_deactivate_after = (
-            created_at + 72 * 3600
-        )  # Set deactivation time to 3 days
-        expires_at = created_at + 365 * 24 * 3600  # Set expiration to 1 year from now
-        public_jwk = self._public_key_to_jwk(public_pem, key_id, alg, verify_until)
-        self.signing_keys = RsaSigningKeys(
-            key_id=key_id,
-            private_key=private_key,
-            public_key=public_key,
-            private_pem=private_pem,
-            public_pem=public_pem,
-            alg=alg,
-            is_active=is_active,
-            created_at=created_at,
-            expires_at=expires_at,
-            verify_until=verify_until,
-            signing_deactivate_after=signing_deactivate_after,
-            public_jwk=public_jwk,
-        )
+    # ---------- pure helpers ----------
 
     @staticmethod
-    def _private_key_init(secret_password: str) -> ed25519.Ed25519PrivateKey:
+    def _private_key_init() -> ed25519.Ed25519PrivateKey:
+        """Generate a new Ed25519 private key."""
         return ed25519.Ed25519PrivateKey.generate()
 
     @staticmethod
     def _public_key_init(
         private_key: ed25519.Ed25519PrivateKey,
     ) -> ed25519.Ed25519PublicKey:
+        """Derive the public key from the given private key."""
         return private_key.public_key()
 
     @staticmethod
     def _encrypt_private_key(
         private_key: ed25519.Ed25519PrivateKey, secret_password: str
     ) -> bytes:
+        """Serialize and encrypt a private key using the provided password."""
         return private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
             encryption_algorithm=serialization.BestAvailableEncryption(
-                secret_password.encode()
+                secret_password.encode("utf-8")
             ),
         )
 
     @staticmethod
     def _encoded_public_key(public_key: ed25519.Ed25519PublicKey) -> bytes:
+        """Return the raw-encoded public key bytes."""
         return public_key.public_bytes(
             encoding=serialization.Encoding.Raw,
             format=serialization.PublicFormat.Raw,
@@ -128,50 +138,13 @@ class RsaSigningKeysManager:
 
     @staticmethod
     def _b64url(data: bytes) -> str:
+        """Base64url-encode bytes without padding and return as text."""
         return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-    @staticmethod
-    def _decrypt_private_key(
-        encrypted_pem: bytes | str, password: str
-    ) -> ed25519.Ed25519PrivateKey:
-        try:
-            if isinstance(encrypted_pem, str):
-                encrypted_pem = encrypted_pem.encode("utf-8")  # PEM text -> bytes
-
-            key = serialization.load_pem_private_key(
-                encrypted_pem,
-                password=password.encode("utf-8"),
-            )
-
-            if not isinstance(key, ed25519.Ed25519PrivateKey):
-                raise ValueError("Loaded key is not an Ed25519 private key")
-
-            return key
-
-        except Exception as e:
-            raise ValueError(f"Error decrypting private key: {e}") from e
-
-    @staticmethod
-    def _load_latest_key() -> RsaSigningKeysDB:
-        try:
-            latest_key = (
-                db.session.query(RsaSigningKeysDB)
-                .filter(RsaSigningKeysDB.is_active.is_(True))
-                .order_by(RsaSigningKeysDB.created_at.desc())
-                .first()
-            )
-            if not latest_key:
-                log.warning("No active signing keys found in the database.")
-                raise ValueError("No active signing keys found in the database.")
-
-            return latest_key
-        except Exception as e:
-            log.error(f"Error loading latest key from database: {e}")
-            raise ValueError(f"Error loading latest key from database: {e}")
 
     def _public_key_to_jwk(
         self, public_pem: bytes, key_id: str, alg: str, verify_until: int
-    ) -> dict:
+    ) -> dict[str, Any]:
+        """Build a minimal JWK representation for the given public key."""
         return {
             "kty": "OKP",
             "crv": "Ed25519",
@@ -182,65 +155,147 @@ class RsaSigningKeysManager:
             "ver": verify_until,
         }
 
-    def _save_to_db(self) -> None:
-        existing_key = (
-            db.session.query(RsaSigningKeysDB)
-            .filter_by(key_id=self.signing_keys.key_id)
-            .first()
-        )
-        if existing_key:
-            raise ValueError(
-                f"Key with ID {self.signing_keys.key_id} already exists in the database."
-            )
+    # ---------- crypto ----------
+
+    @staticmethod
+    def _decrypt_private_key(
+        encrypted_pem: bytes | str, password: str
+    ) -> ed25519.Ed25519PrivateKey:
+        """Decrypt and deserialize an Ed25519 private key from PEM bytes/text."""
         try:
+            if isinstance(encrypted_pem, str):
+                # NOTE: only valid if you stored PEM as TEXT (utf-8)
+                encrypted_pem = encrypted_pem.encode("utf-8")
+
+            key = serialization.load_pem_private_key(
+                encrypted_pem,
+                password=password.encode("utf-8"),
+            )
+        except Exception as e:
+            raise SigningKeyCryptoError(
+                f"Failed to decrypt/load private key: {e}"
+            ) from e
+
+        if not isinstance(key, ed25519.Ed25519PrivateKey):
+            raise SigningKeyCryptoError("Loaded key is not an Ed25519 private key")
+
+        return key
+
+    # ---------- DB ----------
+
+    @staticmethod
+    def _load_latest_key() -> RsaSigningKeysDB:
+        """Return the most recently created active signing key from the DB."""
+        try:
+            latest_key = (
+                db.session.query(RsaSigningKeysDB)
+                .filter(RsaSigningKeysDB.is_active.is_(True))
+                .order_by(RsaSigningKeysDB.created_at.desc())
+                .first()
+            )
+        except SQLAlchemyError as e:
+            raise SigningKeyDBError(f"DB error while loading latest key: {e}") from e
+
+        if not latest_key:
+            raise SigningKeyNotFound("No active signing keys found in the database.")
+
+        return latest_key
+
+    def _save_to_db(self) -> None:
+        """Persist the current signing_keys instance as a new DB record."""
+        try:
+            existing_key = (
+                db.session.query(RsaSigningKeysDB)
+                .filter_by(key_id=self.signing_keys.key_id)
+                .first()
+            )
+            if existing_key:
+                raise SigningKeyDBError(
+                    f"Key with ID {self.signing_keys.key_id} already exists."
+                )
+
             new_key = RsaSigningKeysDB()
             new_key.db_entry(self.signing_keys)
             db.session.add(new_key)
             db.session.commit()
-        except Exception as e:
-            db.session.rollback()
-            raise ValueError(f"Error saving key to database: {e}")
 
-    def _instantiate_from_DB(self):
-        try:
-            latest_key: RsaSigningKeysDB = self._load_latest_key()
-            private_key = self._decrypt_private_key(
-                latest_key.private_pem, self.secret_password
-            )
-            public_key = self._public_key_init(private_key)
-            self.signing_keys = RsaSigningKeys(
-                key_id=latest_key.key_id,
-                private_key=private_key,
-                public_key=public_key,
-                private_pem=latest_key.private_pem,
-                public_pem=latest_key.public_pem,
-                alg=latest_key.alg,
-                is_active=latest_key.is_active,
-                created_at=latest_key.created_at,
-                expires_at=latest_key.expires_at,
-                verify_until=latest_key.verify_until,
-                signing_deactivate_after=latest_key.signing_deactivate_after,
-                public_jwk=latest_key.public_jwk,
-            )
-        except ValueError as e:
-            log.error(f"Error instantiating signing keys from database: {e}")
-            raise ValueError(f"Error instantiating signing keys from database: {e}")
+        except SigningKeyDBError:
+            db.session.rollback()
+            raise
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            raise SigningKeyDBError(f"DB error while saving key: {e}") from e
+
+    # ---------- lifecycle ----------
+
+    def _initial_new_keys(self) -> None:
+        """Generate a fresh key pair and populate self.signing_keys without saving."""
+        private_key = self._private_key_init()
+        public_key = self._public_key_init(private_key)
+
+        private_pem = self._encrypt_private_key(private_key, self.secret_password)
+        public_pem = self._encoded_public_key(public_key)
+
+        alg = "EdDSA"
+        key_id = os.urandom(32).hex()
+        created_at = int(time.time())
+
+        verify_until = created_at + 182 * 24 * 3600
+        signing_deactivate_after = created_at + 72 * 3600
+        expires_at = created_at + 365 * 24 * 3600
+
+        public_jwk = self._public_key_to_jwk(public_pem, key_id, alg, verify_until)
+
+        self.signing_keys = RsaSigningKeys(
+            key_id=key_id,
+            private_key=private_key,
+            public_key=public_key,
+            private_pem=private_pem,
+            public_pem=public_pem,
+            alg=alg,
+            is_active=True,
+            created_at=created_at,
+            expires_at=expires_at,
+            verify_until=verify_until,
+            signing_deactivate_after=signing_deactivate_after,
+            public_jwk=public_jwk,
+        )
+
+    def _instantiate_from_DB(self) -> None:
+        """Load the latest active key from the DB into self.signing_keys."""
+        latest_key = self._load_latest_key()
+        private_key = self._decrypt_private_key(
+            latest_key.private_pem, self.secret_password
+        )
+        public_key = self._public_key_init(private_key)
+
+        self.signing_keys = RsaSigningKeys(
+            key_id=latest_key.key_id,
+            private_key=private_key,
+            public_key=public_key,
+            private_pem=latest_key.private_pem,
+            public_pem=latest_key.public_pem,
+            alg=latest_key.alg,
+            is_active=latest_key.is_active,
+            created_at=latest_key.created_at,
+            expires_at=latest_key.expires_at,
+            verify_until=latest_key.verify_until,
+            signing_deactivate_after=latest_key.signing_deactivate_after,
+            public_jwk=latest_key.public_jwk,
+        )
 
     def _generate_new_keys(self) -> None:
+        """Create, store, and log a new signing key pair."""
         self._initial_new_keys()
-        try:
-            self._save_to_db()
-            log.info("Successfully generated and saved new signing keys to database.")
-        except ValueError as save_error:
-            log.error(f"Failed to save new signing keys to database: {save_error}")
-            raise ValueError(
-                f"Failed to save new signing keys to database: {save_error}"
-            )
+        self._save_to_db()
+        log.info("Generated and saved new signing keys (%s).", self.signing_keys.key_id)
 
     def _deactivate_keys(self) -> None:
+        """Mark the current signing key as inactive in memory and in the DB."""
         if not hasattr(self, "signing_keys") or not self.signing_keys.is_active:
             log.warning("No active signing keys found to deactivate.")
             return
+
         try:
             self.signing_keys.is_active = False
             db.session.execute(
@@ -248,69 +303,69 @@ class RsaSigningKeysManager:
                 .where(RsaSigningKeysDB.key_id == self.signing_keys.key_id)
                 .values(is_active=False)
             )
-
             db.session.commit()
-            log.info(
-                f"Successfully deactivated signing keys with ID {self.signing_keys.key_id}."
-            )
-        except Exception as e:
+            log.info("Deactivated signing keys (%s).", self.signing_keys.key_id)
+
+        except SQLAlchemyError as e:
             db.session.rollback()
-            log.error(f"Error deactivating signing keys: {e}")
-            raise ValueError(f"Error deactivating signing keys: {e}")
+            raise SigningKeyDBError(f"DB error while deactivating keys: {e}") from e
 
     def check_key_rotation(self) -> None:
+        """Rotate keys when the current key has passed its signing lifetime."""
         if self.signing_keys.signing_deactivate_after >= int(time.time()):
             return
-        log.info(
-            "Signing keys have reached deactivation time. Deactivating current keys and generating new ones."
-        )
-        print("Signing keys have reached deactivation time. Deactivating current keys and generating new ones.")
+        log.info("Key reached rotation time; rotating.")
         self._deactivate_keys()
         self._generate_new_keys()
 
-    def initiate_signature_keys(self):
+    def initiate_signature_keys(self) -> None:
+        """Ensure signing_keys is loaded, generating new keys if necessary."""
         try:
             self._instantiate_from_DB()
-            log.info("Successfully loaded signing keys from database.")
-        except ValueError as e:
-            log.warning(
-                f"Failed to load signing keys from database: {e}. Generating new keys."
-            )
+            log.info("Loaded signing keys (%s) from DB.", self.signing_keys.key_id)
+            
+        except SigningKeyNotFound as e:
+            log.warning("%s Generating new keys.", e)
+            self._generate_new_keys()
+        except SigningKeyError as e:
+            # crypto/db/etc
+            log.warning("Failed to load signing keys (%s). Generating new keys.", e)
             self._generate_new_keys()
 
     def get_current_signing_key(self) -> RsaSigningKeys:
+        """Return the in-memory active signing key, loading/rotating as needed."""
         if not hasattr(self, "signing_keys"):
-            log.warning("No signing keys found. Initiating signing keys.")
+            log.warning("No signing keys in memory. Initiating.")
             self.initiate_signature_keys()
         self.check_key_rotation()
         return self.signing_keys
 
     def get_signing_key_by_id(self, key_id: str) -> RsaSigningKeys:
+        """Fetch and decrypt a specific signing key from the DB by its ID."""
         try:
-            key_record = (
-                db.session.query(RsaSigningKeysDB).filter_by(key_id=key_id).first()
-            )
-            if not key_record:
-                log.warning(f"No signing key found with ID {key_id}.")
-                raise ValueError(f"No signing key found with ID {key_id}.")
-            private_key = self._decrypt_private_key(
-                key_record.private_pem, self.secret_password
-            )
-            public_key = self._public_key_init(private_key)
-            return RsaSigningKeys(
-                key_id=key_record.key_id,
-                private_key=private_key,
-                public_key=public_key,
-                private_pem=key_record.private_pem,
-                public_pem=key_record.public_pem,
-                alg=key_record.alg,
-                is_active=key_record.is_active,
-                created_at=key_record.created_at,
-                expires_at=key_record.expires_at,
-                verify_until=key_record.verify_until,
-                signing_deactivate_after=key_record.signing_deactivate_after,
-                public_jwk=key_record.public_jwk,
-            )
-        except ValueError as e:
-            log.error(f"Error retrieving signing key by ID {key_id}: {e}")
-            raise ValueError(f"Error retrieving signing key by ID {key_id}: {e}")
+            record = db.session.query(RsaSigningKeysDB).filter_by(key_id=key_id).first()
+        except SQLAlchemyError as e:
+            raise SigningKeyDBError(f"DB error while fetching key {key_id}: {e}") from e
+
+        if not record:
+            raise SigningKeyNotFound(f"No signing key found with ID {key_id}.")
+
+        private_key = self._decrypt_private_key(
+            record.private_pem, self.secret_password
+        )
+        public_key = self._public_key_init(private_key)
+
+        return RsaSigningKeys(
+            key_id=record.key_id,
+            private_key=private_key,
+            public_key=public_key,
+            private_pem=record.private_pem,
+            public_pem=record.public_pem,
+            alg=record.alg,
+            is_active=record.is_active,
+            created_at=record.created_at,
+            expires_at=record.expires_at,
+            verify_until=record.verify_until,
+            signing_deactivate_after=record.signing_deactivate_after,
+            public_jwk=record.public_jwk,
+        )

@@ -80,7 +80,6 @@ class JWKSKeyProvider:
         key, exp = cached
         if exp <= now:
             raise KeyError(f"kid expired: {kid}")
-        print(f"Fetched new key for kid={kid}, expires_at={exp}")  # Debugging statement
         return key
 
     def _refresh_cache(self) -> None:
@@ -90,7 +89,6 @@ class JWKSKeyProvider:
         r = requests.get(self.jwks_url, headers=headers, timeout=self.timeout)
         r.raise_for_status()
         data = r.json()
-        print(f"JWKS fetch data: {data}")  # Debugging statement
 
         keys_val = data.get("keys")
         if isinstance(keys_val, list):

@@ -1,13 +1,14 @@
 # auth_client_test.py
 from __future__ import annotations
 
-import jwt
-
 import os
 import sys
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+import base64
+import json
 
+import jwt
 import requests
 
 
@@ -54,8 +55,7 @@ class AuthClient:
         if not self.tokens:
             raise AuthClientError("No tokens set. Call login() first.")
 
-        # Your API uses GET with JSON body
-        r = self.session.get(
+        r = self.session.post(
             f"{self.base_url}/refresh",
             json={"refresh_token": self.tokens.refresh_token},
             timeout=self.timeout,
@@ -70,6 +70,31 @@ class AuthClient:
         self.tokens = Tokens(access_token=token, refresh_token=refresh_token)
         return self.tokens
 
+    def logout(self) -> Dict[str, Any]:
+        """Logout current session (revoke this refresh token)."""
+        if not self.tokens:
+            raise AuthClientError("No tokens set. Call login() first.")
+        r = self.session.post(
+            f"{self.base_url}/logout",
+            json={"refresh_token": self.tokens.refresh_token},
+            timeout=self.timeout,
+        )
+        data = self._handle_json(r)
+        # After logout, refresh token should be invalid, so clear locally too
+        self.tokens = None
+        return data
+
+    def logout_all(self, user_id: int) -> Dict[str, Any]:
+        """Logout all sessions for a user."""
+        r = self.session.post(
+            f"{self.base_url}/logout_all",
+            json={"refresh_token": self.tokens.refresh_token} if self.tokens else {},
+            timeout=self.timeout,
+        )
+        data = self._handle_json(r)
+        self.tokens = None
+        return data
+
     def auth_headers(self) -> Dict[str, str]:
         if not self.tokens:
             raise AuthClientError("No access token.")
@@ -78,12 +103,6 @@ class AuthClient:
     def _get_json(
         self, url: str, *, headers: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:
-        print(f"GET {url} with headers={headers}")  # Debugging statement
-        jwtt = headers.get("Authorization") if headers else None
-        if jwtt:
-            decoded = jwt.decode(jwtt.split(" ")[1], options={"verify_signature": False})
-            print(f"Decoded JWT: {decoded}")
-
         r = self.session.get(url, headers=headers, timeout=self.timeout)
         return self._handle_json(r)
 
@@ -94,9 +113,8 @@ class AuthClient:
         except Exception:
             raise AuthClientError(f"Non-JSON response ({r.status_code}): {r.text}")
 
-        status_code = r.status_code
-        if status_code >= 400:
-            raise AuthClientError(f"HTTP {status_code}: {data}")
+        if not r.ok:
+            raise AuthClientError(f"HTTP {r.status_code}: {data}")
 
         return data
 
@@ -113,8 +131,6 @@ def fail(msg: str) -> None:
 
 
 def decode_jwt_header(token: str) -> Dict[str, Any]:
-    import base64
-    import json
 
     parts = token.split(".")
     if len(parts) != 3:
@@ -126,8 +142,6 @@ def decode_jwt_header(token: str) -> Dict[str, Any]:
 
 
 def decode_jwt_payload(token: str) -> Dict[str, Any]:
-    import base64
-    import json
 
     parts = token.split(".")
     if len(parts) != 3:
@@ -181,11 +195,10 @@ def main() -> None:
         fail(f"jwt header -> {e}")
         failed = True
 
-    # 4) Extract user_id (for /health2/<int:user>)
+    # 4) Extract user_id (for /health/<int:user>)
     user_id: Optional[int] = None
     try:
         payload = decode_jwt_payload(tokens.access_token)
-        # your payload uses user_id; fallback to sub if you ever switch
         uid = payload.get("user_id", payload.get("sub"))
         if uid is None:
             raise ValueError("Token payload missing user_id (or sub)")
@@ -195,28 +208,101 @@ def main() -> None:
         fail(f"token payload -> {e}")
         failed = True
 
-    # 5) Test the app endpoint /health2/<int:user>
+    # 5) Test the app endpoint /health/<int:user>
     if user_id is not None:
         try:
-            url = f"{app_base}/health2/{user_id}"
+            url = f"{app_base}/health/{user_id}"
             data = client._get_json(url, headers=client.auth_headers())
-            ok(f"app GET {url} -> {data}")
+            value = data.values()
+            ok(f"app GET {url} -> {value}")
         except AuthClientError as e:
-            fail(f"app /health2/{user_id} -> {e}")
+            fail(f"app /health/{user_id} -> {e}")
             failed = True
 
-    # 6) Refresh
+    # 6) Refresh (should rotate)
+    old_access = tokens.access_token
+    old_refresh = tokens.refresh_token
     try:
         new_tokens = client.refresh()
         ok("refresh -> success")
-        if new_tokens.access_token == tokens.access_token:
-            fail("refresh -> token did not change")
+        if new_tokens.access_token == old_access:
+            fail("refresh -> access token did not change")
             failed = True
         else:
-            ok("refresh -> token rotated")
+            ok("refresh -> access token rotated")
+        if new_tokens.refresh_token == old_refresh:
+            fail("refresh -> refresh token did not change")
+            failed = True
+        else:
+            ok("refresh -> refresh token rotated")
     except AuthClientError as e:
         fail(f"refresh -> {e}")
         failed = True
+
+    # 7) Logout (single session) then refresh should FAIL
+    # Save refresh token before logout (client.logout clears tokens)
+    refresh_to_test = client.tokens.refresh_token if client.tokens else None
+    try:
+        res = client.logout()
+        ok(f"logout -> {res.get('message', res)}")
+    except AuthClientError as e:
+        fail(f"logout -> {e}")
+        failed = True
+
+    if refresh_to_test:
+        try:
+            # attempt refresh using the revoked token
+            r = client.session.post(
+                f"{auth_base}/refresh",
+                json={"refresh_token": refresh_to_test},
+                timeout=client.timeout,
+            )
+            if r.ok:
+                fail(f"refresh after logout -> unexpectedly succeeded: {r.json()}")
+                failed = True
+            else:
+                ok(f"refresh after logout -> failed as expected ({r.status_code})")
+        except Exception as e:
+            fail(f"refresh after logout -> request error: {e}")
+            failed = True
+
+    # 8) Login again, then logout_all, then refresh should FAIL
+    try:
+        tokens2 = client.login(username, password, email)  # noqa: F841
+        ok("login (for logout_all) -> received tokens")
+    except AuthClientError as e:
+        fail(f"login (for logout_all) -> {e}")
+        sys.exit(1)
+
+    refresh_to_test2 = client.tokens.refresh_token if client.tokens else None
+
+    if user_id is not None:
+        try:
+            res = client.logout_all(user_id)
+            ok(f"logout_all -> {res.get('message', res)}")
+        except AuthClientError as e:
+            fail(f"logout_all -> {e}")
+            failed = True
+
+        if refresh_to_test2:
+            try:
+                r = client.session.post(
+                    f"{auth_base}/refresh",
+                    json={"refresh_token": refresh_to_test2},
+                    timeout=client.timeout,
+                )
+                if r.ok:
+                    fail(
+                        f"refresh after logout_all -> unexpectedly succeeded: {r.json()}"
+                    )
+                    failed = True
+                else:
+                    ok(
+                        f"refresh after logout_all -> failed as expected ({r.status_code})"
+                    )
+            except Exception as e:
+                fail(f"refresh after logout_all -> request error: {e}")
+                failed = True
 
     # Exit status
     if failed:
