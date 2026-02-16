@@ -9,18 +9,29 @@ import requests
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from flask import abort, g, request
 
+"""JWT verification helpers for consumer services.
+
+This module provides:
+    - a JWKSKeyProvider that fetches and caches Ed25519 public keys from the
+        Authentication API's JWKS endpoint, and
+    - a RequiresAuth decorator that verifies bearer JWTs, validates their
+        claims, and exposes them on flask.g for downstream view functions.
+"""
+
 
 ViewFunc = Callable[..., Any]
 
 
 def _b64url_decode(s: str) -> bytes:
-    # base64url without padding
+    """Decode base64url text (without padding) into raw bytes."""
     pad = "=" * (-len(s) % 4)
     return base64.urlsafe_b64decode(s + pad)
 
 
 @dataclass(frozen=True, slots=True)
 class JWTClaims:
+    """Strongly-typed subset of JWT claims used by the application."""
+
     user_id: int
     signature_id: str
     id: str
@@ -33,10 +44,12 @@ _G_CLAIMS_KEY = "jwt_claims"
 
 
 def set_current_claims(claims: JWTClaims) -> None:
+    """Store verified JWT claims on flask.g for the current request."""
     setattr(g, _G_CLAIMS_KEY, claims)
 
 
 def get_current_claims() -> JWTClaims:
+    """Retrieve current-request JWT claims or abort with 401 if missing."""
     claims = getattr(g, _G_CLAIMS_KEY, None)
     if not isinstance(claims, JWTClaims):
         abort(401, description="Missing JWT claims in request context")
@@ -44,9 +57,7 @@ def get_current_claims() -> JWTClaims:
 
 
 class JWKSKeyProvider:
-    """
-    Caches public keys by kid. Fetches JWKS from the Auth API when kid is missing.
-    """
+    """Cache and resolve public keys by kid using the Auth API JWKS endpoint."""
 
     def __init__(
         self, jwks_url: str, api_key: str, *, timeout: float = 5.0, cache_ttl: int = 300
@@ -60,6 +71,7 @@ class JWKSKeyProvider:
         ] = {}  # kid -> (key, expires_at)
 
     def get(self, kid: str) -> Ed25519PublicKey:
+        """Return a public key for the given kid, refreshing cache if needed."""
         now = int(time.time())
 
         cached = self._keys.get(kid)
@@ -83,6 +95,7 @@ class JWKSKeyProvider:
         return key
 
     def _refresh_cache(self) -> None:
+        """Fetch JWKS from the auth service and update the in-memory cache."""
         headers = {
             "X-API-Key": self.api_key,
         }
@@ -121,14 +134,11 @@ class JWKSKeyProvider:
 
 
 class RequiresAuth:
-    """
-    JWT auth that:
-      - extracts bearer token
-      - reads kid from header
-      - fetches public key from Auth API JWKS if needed
-      - verifies token
-      - validates payload format
-      - stores claims on g
+    """Decorator-based JWT auth using JWKS-resolved Ed25519 public keys.
+
+    It extracts the bearer token, loads the matching public key by ``kid``,
+    verifies the signature, validates custom claims, and attaches them to
+    flask.g so view functions can access the authenticated user.
     """
 
     def __init__(
@@ -138,11 +148,14 @@ class RequiresAuth:
         algorithms: Optional[list[str]] = None,
         debug: bool = False,
     ):
+        """Configure auth with a key provider and allowed algorithms."""
         self.key_provider = key_provider
         self.algorithms = algorithms or ["EdDSA"]
         self.debug = debug
 
     def __call__(self, f: ViewFunc) -> ViewFunc:
+        """Allow instance to be used directly as a ``@RequiresAuth(...)`` decorator."""
+
         @wraps(f)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             self._authenticate_and_store()
@@ -156,6 +169,13 @@ class RequiresAuth:
         match_user_id: bool = False,
         route_param: str = "user_id",
     ) -> Callable[[ViewFunc], ViewFunc]:
+        """Return a decorator enforcing authentication and optional user-id match.
+
+        When ``match_user_id`` is True, the claim ``user_id`` must equal the
+        route parameter identified by ``route_param`` or the request is
+        rejected with 403.
+        """
+
         def decorator(f: ViewFunc) -> ViewFunc:
             @wraps(f)
             def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -173,6 +193,7 @@ class RequiresAuth:
         return decorator
 
     def _authenticate_and_store(self) -> JWTClaims:
+        """Verify the bearer token, store claims on flask.g, and return them."""
         token = self._get_token_auth_header()
 
         # 1) read header without verifying
@@ -208,6 +229,7 @@ class RequiresAuth:
         return claims
 
     def _validate_payload(self, payload: dict[str, Any]) -> JWTClaims:
+        """Validate payload structure and custom expiry, returning JWTClaims."""
         required = (
             "user_id",
             "signature_id",
@@ -239,6 +261,7 @@ class RequiresAuth:
 
     @staticmethod
     def _get_token_auth_header() -> str:
+        """Extract the bearer token from the Authorization header or abort."""
         auth = request.headers.get("Authorization")
         if not isinstance(auth, str):
             abort(401, description="Authorization header is expected")

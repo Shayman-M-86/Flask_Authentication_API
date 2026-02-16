@@ -1,4 +1,3 @@
-
 import os
 import time
 from logging import getLogger
@@ -255,7 +254,7 @@ class JWTHandler:
             raise TokenStorageError("Failed to delete old refresh token") from e
 
         return new_tokens
-    
+
     def revoke_all_for_user(self, user_id: int) -> None:
         """Revoke all refresh tokens for a user, e.g. on password change."""
         try:
@@ -265,7 +264,7 @@ class JWTHandler:
             db.session.rollback()
             log.exception("Failed to revoke refresh tokens for user")
             raise TokenStorageError("Failed to revoke refresh tokens for user") from e
-    
+
     def revoke_refresh_token_by_refresh_token(self, refresh_token: str) -> None:
         """Revoke a refresh token by its token string, e.g. on logout with token."""
         try:
@@ -282,7 +281,7 @@ class JWTHandler:
             db.session.rollback()
             log.exception("Failed to revoke refresh token by token")
             raise TokenStorageError("Failed to revoke refresh token") from e
-    
+
     def revoke_all_for_key(self, signature_id: str) -> None:
         """Revoke all refresh tokens issued with a specific signing key, e.g. on key rotation."""
         try:
@@ -291,8 +290,10 @@ class JWTHandler:
         except SQLAlchemyError as e:
             db.session.rollback()
             log.exception("Failed to revoke refresh tokens for signing key")
-            raise TokenStorageError("Failed to revoke refresh tokens for signing key") from e
-    
+            raise TokenStorageError(
+                "Failed to revoke refresh tokens for signing key"
+            ) from e
+
     def revoke_token_by_id(self, token_id: str) -> None:
         """Revoke a specific refresh token by its ID, e.g. on logout."""
         try:
@@ -302,20 +303,21 @@ class JWTHandler:
             db.session.rollback()
             log.exception("Failed to revoke refresh token by id")
             raise TokenStorageError("Failed to revoke refresh token") from e
-    
+
     def revoke_refresh_token_by_limit(self, user_id: int, limit: int) -> None:
         """Revoke a limited number of refresh tokens for a user."""
         try:
-            db.session.query(JwtRefreshDB).filter_by(user_id=user_id).order_by(JwtRefreshDB.created_at.asc()).limit(limit).delete()
+            db.session.query(JwtRefreshDB).filter_by(user_id=user_id).order_by(
+                JwtRefreshDB.created_at.asc()
+            ).limit(limit).delete()
             db.session.commit()
         except SQLAlchemyError as e:
             db.session.rollback()
             log.exception("Failed to revoke refresh tokens by limit")
             raise TokenStorageError("Failed to revoke refresh tokens by limit") from e
-    
+
     def verify_from_refresh(self, refresh_token: str) -> int:
         """Verify a refresh token and return the associated user ID, e.g. for logout_all."""
         db_entry = self.refresh_token_verify(refresh_token)
         self.verify_signature(refresh_token, db_entry)
         return db_entry.user_id
-

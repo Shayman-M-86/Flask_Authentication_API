@@ -1,5 +1,5 @@
-import os
 import logging
+import os
 from functools import wraps
 from typing import Any, Callable, Dict
 
@@ -9,13 +9,20 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from src.authentication_api.extensions import db, migrate
-from src.authentication_api.models.user import UserDB, UserSchema
-from src.authentication_api.models.signing_keys import RsaSigningKeysManager
 from src.authentication_api.models.jwt import (
     JWTHandler,
     RefreshTokenInvalid,
     TokenStorageError,
 )
+from src.authentication_api.models.signing_keys import RsaSigningKeysManager
+from src.authentication_api.models.user import UserDB, UserSchema
+
+"""Flask application factory for the authentication API.
+
+This module wires together database extensions, JWT key management, and
+HTTP routes for user registration, login, logout, token refresh, and
+JWKS key discovery.
+"""
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -23,6 +30,7 @@ load_dotenv()
 
 
 def extract_password() -> str:
+    """Read and return the SECRET_PASSWORD used to encrypt signing keys."""
     load_dotenv()
     secret = os.getenv("SECRET_PASSWORD")
     if not secret:
@@ -31,6 +39,7 @@ def extract_password() -> str:
 
 
 def require_service_password() -> None:
+    """Validate the X-API-Key header against SERVICE_PASSWORD or raise."""
     expected = os.getenv("SERVICE_PASSWORD")
     provided = request.headers.get("X-API-Key")
     if not expected or provided != expected:
@@ -39,6 +48,8 @@ def require_service_password() -> None:
 
 
 def service_protected(f: Callable[..., Any]) -> Callable[..., Any]:
+    """Decorator that restricts a route to callers with the service password."""
+
     @wraps(f)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
@@ -51,6 +62,7 @@ def service_protected(f: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def get_json_or_400() -> Dict[str, Any]:
+    """Return request JSON as a dict or raise ValueError on bad/missing body."""
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         raise ValueError("Expected JSON object body")
@@ -58,6 +70,7 @@ def get_json_or_400() -> Dict[str, Any]:
 
 
 def create_app() -> Flask:
+    """Application factory configuring DB, JWT handler, and HTTP routes."""
     app = Flask(__name__)
 
     app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("AUTH_DB")
@@ -76,6 +89,7 @@ def create_app() -> Flask:
     # -------------------- routes --------------------
     @app.post("/logout")
     def logout():
+        """Revoke a single refresh token, logging out the associated session."""
         try:
             data = get_json_or_400()
             refresh_token = data.get("refresh_token")
@@ -94,9 +108,10 @@ def create_app() -> Flask:
         except Exception:
             log.exception("Unexpected logout error")
             return jsonify({"error": "Server error"}), 500
-    
+
     @app.post("/logout_all")
     def logout_all():
+        """Log out all active sessions for the user owning a refresh token."""
         try:
             data = get_json_or_400()
             refresh_token = data.get("refresh_token")
@@ -122,9 +137,10 @@ def create_app() -> Flask:
         except Exception:
             log.exception("Unexpected logout_all error")
             return jsonify({"error": "Server error"}), 500
-        
+
     @app.post("/login")
     def login():
+        """Authenticate a user and return an access token plus refresh token."""
         try:
             data = get_json_or_400()
             user_data = UserSchema(**data)
@@ -143,10 +159,14 @@ def create_app() -> Flask:
 
         if not user or not user.check_password(user_data.password):
             return jsonify({"error": "Invalid username or password"}), 401
-        
+
         refresh_tokens = user.jwt_refresh_tokens or []
         if len(refresh_tokens) >= 5:
-            return jsonify({"error": "Too many active sessions. Please refresh or logout other sessions."}), 403
+            return jsonify(
+                {
+                    "error": "Too many active sessions. Please refresh or logout other sessions."
+                }
+            ), 403
 
         try:
             token, refresh_token = jwt_handler.create_new_tokens(user.id)
@@ -167,6 +187,7 @@ def create_app() -> Flask:
 
     @app.post("/register")
     def register():
+        """Create a new user account if the username is not taken."""
         try:
             data = get_json_or_400()
             user_data = UserSchema(**data)
@@ -198,7 +219,7 @@ def create_app() -> Flask:
 
     @app.post("/refresh")
     def refresh():
-        # You’re currently using POST with JSON body; works, but POST is more normal.
+        """Exchange a valid refresh token for a new access/refresh pair."""
         try:
             data = get_json_or_400()
             refresh_token = data.get("refresh_token")
@@ -223,6 +244,7 @@ def create_app() -> Flask:
     @app.get("/.well-known/jwks.json")
     @service_protected
     def jwks():
+        """Expose the current public signing key set as JWKS for services."""
         try:
             key = key_manager.get_current_signing_key()
             # Standard-ish JWKS shape so clients can do data["keys"]
@@ -237,6 +259,7 @@ def create_app() -> Flask:
     @app.get("/keys/<kid>")
     @service_protected
     def get_key(kid: str):
+        """Return the public JWK for a specific key ID (kid)."""
         try:
             key = key_manager.get_signing_key_by_id(kid)
             return jsonify(key.public_jwk), 200

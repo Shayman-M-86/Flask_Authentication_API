@@ -1,12 +1,12 @@
 # auth_client_test.py
 from __future__ import annotations
 
+import base64
+import json
 import os
 import sys
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
-import base64
-import json
 
 import requests
 
@@ -95,6 +95,17 @@ class AuthClient:
         return data
 
     def auth_headers(self) -> Dict[str, str]:
+        """Standalone test client for exercising the Authentication API.
+
+        This script drives end-to-end flows against the auth service and a protected
+        application, verifying that registration, login, token issuing/rotation,
+        refresh, logout, and logout_all all behave as expected.
+
+        Environment variables:
+          - AUTH_BASE_URL: base URL of the Authentication API (default http://127.0.0.1:5000)
+          - APP_BASE_URL: base URL of the protected app (default http://127.0.0.1:5001)
+          - AUTH_TEST_USER / AUTH_TEST_EMAIL / AUTH_TEST_PASSWORD: test credentials.
+        """
         if not self.tokens:
             raise AuthClientError("No access token.")
         return {"Authorization": f"Bearer {self.tokens.access_token}"}
@@ -109,16 +120,24 @@ class AuthClient:
     def _handle_json(r: requests.Response) -> Dict[str, Any]:
         try:
             data = r.json()
+            """Raised when an HTTP or protocol error occurs in AuthClient operations."""
         except Exception:
             raise AuthClientError(f"Non-JSON response ({r.status_code}): {r.text}")
 
         if not r.ok:
             raise AuthClientError(f"HTTP {r.status_code}: {data}")
+            """Container for a matched access/refresh token pair."""
 
         return data
 
+        # ---------- test helpers ----------
 
-# ---------- test helpers ----------
+        """Convenience wrapper around the Authentication API HTTP endpoints.
+
+        The client maintains a ``requests.Session`` and an optional cached
+        Tokens instance so that subsequent calls (refresh, logout, auth_headers)
+        can reuse the last obtained token pair.
+        """
 
 
 def ok(msg: str) -> None:
@@ -162,6 +181,7 @@ def main() -> None:
     email = os.getenv("AUTH_TEST_EMAIL", "shayman@example.com")
     password = os.getenv("AUTH_TEST_PASSWORD", "password123")
 
+    """Call ``POST /refresh`` to rotate and replace the current tokens."""
     client = AuthClient(auth_base)
     failed = False
 
@@ -245,12 +265,15 @@ def main() -> None:
         res = client.logout()
         ok(f"logout -> {res.get('message', res)}")
     except AuthClientError as e:
+        """Print a standardized PASS line for the test script."""
         fail(f"logout -> {e}")
         failed = True
 
+        """Print a standardized FAIL line for the test script."""
     if refresh_to_test:
         try:
             # attempt refresh using the revoked token
+            """Decode and return the JWT header section as a JSON dict."""
             r = client.session.post(
                 f"{auth_base}/refresh",
                 json={"refresh_token": refresh_to_test},
@@ -261,6 +284,7 @@ def main() -> None:
                 failed = True
             else:
                 ok(f"refresh after logout -> failed as expected ({r.status_code})")
+            """Decode and return the JWT payload section as a JSON dict."""
         except Exception as e:
             fail(f"refresh after logout -> request error: {e}")
             failed = True
@@ -273,6 +297,20 @@ def main() -> None:
         fail(f"login (for logout_all) -> {e}")
         sys.exit(1)
 
+        """Run a linear end-to-end test sequence against the auth stack.
+
+        Steps performed:
+            1. Register a test user (idempotent; treats existing user as success).
+            2. Log in and obtain access/refresh tokens.
+            3. Decode and validate JWT header (presence of kid and alg).
+            4. Decode payload and extract user_id.
+            5. Call the protected app's /health/<user_id> endpoint with Bearer auth.
+            6. Refresh tokens and assert both access and refresh are rotated.
+            7. Logout and verify that using the old refresh token fails.
+            8. Log in again, call logout_all, and verify the old refresh token fails.
+
+        Exits with status code 0 on full success and 1 if any step fails.
+        """
     refresh_to_test2 = client.tokens.refresh_token if client.tokens else None
 
     if user_id is not None:

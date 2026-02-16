@@ -9,8 +9,12 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from src.authentication_api.extensions import db
 from src.authentication_api.models.jwt import JwtRefreshDB
 
+"""User persistence model and input validation schema for the auth API."""
+
 
 class UserDB(UserMixin, db.Model):
+    """SQLAlchemy user table with password hashing and refresh-token relation."""
+
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
@@ -37,16 +41,20 @@ class UserDB(UserMixin, db.Model):
     )
 
     def __repr__(self) -> str:
+        """Return a short textual representation of the user."""
         quote = f"<User {self.username} - {self.email}>"
         return quote
 
     def set_password(self, password: str) -> None:
+        """Hash and store the user's password."""
         self._password_hash = generate_password_hash(password)
 
     def check_password(self, password: str) -> bool:
+        """Verify a plaintext password against the stored hash."""
         return check_password_hash(self._password_hash, password)
 
     def to_dict(self) -> dict:
+        """Return a serializable dictionary of basic user fields."""
         return {
             "id": self.id,
             "username": self.username,
@@ -56,6 +64,8 @@ class UserDB(UserMixin, db.Model):
 
 
 class UserSchema(BaseModel):
+    """Pydantic schema for validating username, email, and password input."""
+
     username: Annotated[
         str,
         Field(..., min_length=4, pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9_]*[A-Za-z0-9])?$"),

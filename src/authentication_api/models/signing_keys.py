@@ -323,7 +323,7 @@ class RsaSigningKeysManager:
         try:
             self._instantiate_from_DB()
             log.info("Loaded signing keys (%s) from DB.", self.signing_keys.key_id)
-            
+
         except SigningKeyNotFound as e:
             log.warning("%s Generating new keys.", e)
             self._generate_new_keys()
