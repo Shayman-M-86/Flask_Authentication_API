@@ -15,7 +15,7 @@ from src.authentication_api.models.jwt import (
     TokenStorageError,
 )
 from src.authentication_api.models.signing_keys import RsaSigningKeysManager
-from src.authentication_api.models.user import UserDB, UserSchema
+from src.authentication_api.models.user import UserDB, UserSchema, PepperHandler
 
 """Flask application factory for the authentication API.
 
@@ -75,6 +75,7 @@ def create_app() -> Flask:
 
     app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("AUTH_DB")
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    
 
     db.init_app(app)
     migrate.init_app(app, db)
@@ -82,6 +83,7 @@ def create_app() -> Flask:
     secret_password = extract_password()
     key_manager = RsaSigningKeysManager(secret_password)
     jwt_handler = JWTHandler(key_manager)
+    pepper_handler = PepperHandler()
 
     with app.app_context():
         db.create_all()
@@ -156,8 +158,8 @@ def create_app() -> Flask:
         except SQLAlchemyError:
             log.exception("DB error during login lookup")
             return jsonify({"error": "Database error"}), 500
-
-        if not user or not user.check_password(user_data.password):
+        
+        if not user or not user.check_password(user_data.password, pepper_handler):
             return jsonify({"error": "Invalid username or password"}), 401
 
         refresh_tokens = user.jwt_refresh_tokens or []
@@ -206,7 +208,7 @@ def create_app() -> Flask:
             new_user = UserDB()
             new_user.username = user_data.username
             new_user.email = user_data.email
-            new_user.set_password(user_data.password)
+            new_user.set_password(user_data.password, pepper_handler)
 
             db.session.add(new_user)
             db.session.commit()

@@ -1,10 +1,11 @@
 from typing import Annotated
-
+import hashlib 
+import os
+from argon2 import PasswordHasher
 from flask_login import UserMixin
 from pydantic import BaseModel, Field
 from sqlalchemy import CheckConstraint, DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from werkzeug.security import check_password_hash, generate_password_hash
 
 from src.authentication_api.extensions import db
 from src.authentication_api.models.jwt import JwtRefreshDB
@@ -14,7 +15,7 @@ from src.authentication_api.models.jwt import JwtRefreshDB
 
 class UserDB(UserMixin, db.Model):
     """SQLAlchemy user table with password hashing and refresh-token relation."""
-
+    
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
@@ -39,19 +40,24 @@ class UserDB(UserMixin, db.Model):
     jwt_refresh_tokens: Mapped[list["JwtRefreshDB"]] = relationship(
         "JwtRefreshDB", back_populates="user"
     )
+    
+    
+    ph = PasswordHasher(time_cost=3, memory_cost=64 * 1024, parallelism=2)
 
     def __repr__(self) -> str:
         """Return a short textual representation of the user."""
         quote = f"<User {self.username} - {self.email}>"
         return quote
 
-    def set_password(self, password: str) -> None:
-        """Hash and store the user's password."""
-        self._password_hash = generate_password_hash(password)
 
-    def check_password(self, password: str) -> bool:
+    
+    def set_password(self, password: str, pepper_handler: "PepperHandler") -> None:
+        """Hash and store the user's password."""
+        self._password_hash = self.ph.hash(pepper_handler.pepper(password))
+
+    def check_password(self, password: str, pepper_handler: "PepperHandler") -> bool:
         """Verify a plaintext password against the stored hash."""
-        return check_password_hash(self._password_hash, password)
+        return self.ph.verify(self._password_hash, pepper_handler.pepper(password))
 
     def to_dict(self) -> dict:
         """Return a serializable dictionary of basic user fields."""
@@ -72,3 +78,17 @@ class UserSchema(BaseModel):
     ]
     email: Annotated[str, Field(..., pattern=r"^[^@]+@[^@]+\.[^@]+$")]
     password: Annotated[str, Field(..., min_length=8)]
+
+class PepperHandler:
+    def __init__(self):
+        items = os.getenv("PEPPER", "default_pepper_value").split(":-:-:")
+        self.pepper_id = items[0].encode("utf-8")
+        self.PEPPER = items[1].encode("utf-8")
+    
+    def pepper(self, password: str) -> bytes:
+        # stable bytes input
+        hash_input = hashlib.sha256(
+            password.encode("utf-8") + self.PEPPER
+        ).digest()
+        hash = self.pepper_id + b":-:-:" + hash_input
+        return hash
