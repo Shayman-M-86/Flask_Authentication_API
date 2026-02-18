@@ -19,7 +19,7 @@ Flask_Authentication_API is responsible for:
 
 The service enables backend APIs to verify authentication locally without tight coupling to the authentication database.
 
-**Please check out the future plans as well [Future Plans & Roadmap](docs\FUTURE_PLANS.md)**
+**Please check out the future plans as well [Future Plans & Roadmap](docs/FUTURE_PLANS.md)**
 
 ---
 
