@@ -97,7 +97,7 @@ On the first request after startup, it requests the active key from the database
 
 If the signing key is not active or invalid, the `KeyManager` will automatically generate a new key pair and update the database. This allows for seamless key rotation.
 
-![Token Refresh Flow](docs\images\Token_Refresh_Flow.png)
+![Token Refresh Flow](docs/images/Token_Refresh_Flow.png)
 
 ---
 
@@ -105,7 +105,7 @@ If the signing key is not active or invalid, the `KeyManager` will automatically
 
 Backend services verify tokens locally using public keys.
 
-![Backend Verification Flow](docs\images\Backend_Verification_Flow.png)
+![Backend Verification Flow](docs/images/Backend_Verification_Flow.png)
 
 ## [**Click here for Interactable Diagrams**](https://app.zenuml.com?id=item-quPYrCPJkT&share-token=1e4f5be3bea603b97fff622ec9ebb5e9&v=50719599c453ea6bdbebf338a5356fc2)
 
