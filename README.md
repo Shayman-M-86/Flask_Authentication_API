@@ -89,7 +89,7 @@ Characteristics:
 
 On the first request after startup, it requests the active key from the database. If none exists, it generates a new key pair and stores it. This ensures that there is always an active signing key available for token issuance.
 
-![Register Flow](docs\images\Register_Flow.png)
+![Register Flow](docs/images/Register_Flow.png)
 
 ---
 
