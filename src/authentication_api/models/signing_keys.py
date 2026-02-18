@@ -4,7 +4,7 @@ import time
 from logging import getLogger
 from typing import Any
 
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import serialization as ser
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Boolean, Integer, LargeBinary, String, update
@@ -103,17 +103,7 @@ class RsaSigningKeysManager:
 
     # ---------- pure helpers ----------
 
-    @staticmethod
-    def _private_key_init() -> ed25519.Ed25519PrivateKey:
-        """Generate a new Ed25519 private key."""
-        return ed25519.Ed25519PrivateKey.generate()
 
-    @staticmethod
-    def _public_key_init(
-        private_key: ed25519.Ed25519PrivateKey,
-    ) -> ed25519.Ed25519PublicKey:
-        """Derive the public key from the given private key."""
-        return private_key.public_key()
 
     @staticmethod
     def _encrypt_private_key(
@@ -121,9 +111,9 @@ class RsaSigningKeysManager:
     ) -> bytes:
         """Serialize and encrypt a private key using the provided password."""
         return private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.BestAvailableEncryption(
+            encoding=ser.Encoding.PEM,
+            format=ser.PrivateFormat.PKCS8,
+            encryption_algorithm=ser.BestAvailableEncryption(
                 secret_password.encode("utf-8")
             ),
         )
@@ -132,23 +122,23 @@ class RsaSigningKeysManager:
     def _encoded_public_key(public_key: ed25519.Ed25519PublicKey) -> bytes:
         """Return the raw-encoded public key bytes."""
         return public_key.public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
+            encoding=ser.Encoding.Raw,
+            format=ser.PublicFormat.Raw,
         )
 
     @staticmethod
     def _b64url(data: bytes) -> str:
         """Base64url-encode bytes without padding and return as text."""
         return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-    def _public_key_to_jwk(
-        self, public_pem: bytes, key_id: str, alg: str, verify_until: int
+    
+    @staticmethod
+    def _public_key_to_jwk(public_pem: bytes, key_id: str, alg: str, verify_until: int
     ) -> dict[str, Any]:
         """Build a minimal JWK representation for the given public key."""
         return {
             "kty": "OKP",
             "crv": "Ed25519",
-            "x": self._b64url(public_pem),
+            "x": RsaSigningKeysManager._b64url(public_pem),
             "kid": key_id,
             "use": "sig",
             "alg": alg,
@@ -162,19 +152,17 @@ class RsaSigningKeysManager:
         encrypted_pem: bytes | str, password: str
     ) -> ed25519.Ed25519PrivateKey:
         """Decrypt and deserialize an Ed25519 private key from PEM bytes/text."""
-        try:
-            if isinstance(encrypted_pem, str):
-                # NOTE: only valid if you stored PEM as TEXT (utf-8)
-                encrypted_pem = encrypted_pem.encode("utf-8")
+        
+        if isinstance(encrypted_pem, str):
+            # NOTE: only valid if you stored PEM as TEXT (utf-8)
+            encrypted_pem = encrypted_pem.encode("utf-8")
 
-            key = serialization.load_pem_private_key(
+        try:
+            key = ser.load_pem_private_key(
                 encrypted_pem,
-                password=password.encode("utf-8"),
-            )
-        except Exception as e:
-            raise SigningKeyCryptoError(
-                f"Failed to decrypt/load private key: {e}"
-            ) from e
+                password=password.encode("utf-8"))
+        except ValueError as e:
+            raise SigningKeyCryptoError("Failed to decrypt/load private key") from e
 
         if not isinstance(key, ed25519.Ed25519PrivateKey):
             raise SigningKeyCryptoError("Loaded key is not an Ed25519 private key")
@@ -194,7 +182,8 @@ class RsaSigningKeysManager:
                 .first()
             )
         except SQLAlchemyError as e:
-            raise SigningKeyDBError(f"DB error while loading latest key: {e}") from e
+            db.session.rollback()
+            raise SigningKeyDBError("DB error while loading latest key") from e
 
         if not latest_key:
             raise SigningKeyNotFound("No active signing keys found in the database.")
@@ -224,14 +213,14 @@ class RsaSigningKeysManager:
             raise
         except SQLAlchemyError as e:
             db.session.rollback()
-            raise SigningKeyDBError(f"DB error while saving key: {e}") from e
+            raise SigningKeyDBError("DB error while saving key") from e
 
     # ---------- lifecycle ----------
 
     def _initial_new_keys(self) -> None:
         """Generate a fresh key pair and populate self.signing_keys without saving."""
-        private_key = self._private_key_init()
-        public_key = self._public_key_init(private_key)
+        private_key = ed25519.Ed25519PrivateKey.generate()
+        public_key = private_key.public_key()
 
         private_pem = self._encrypt_private_key(private_key, self.secret_password)
         public_pem = self._encoded_public_key(public_key)
@@ -240,9 +229,9 @@ class RsaSigningKeysManager:
         key_id = os.urandom(32).hex()
         created_at = int(time.time())
 
-        verify_until = created_at + 182 * 24 * 3600
-        signing_deactivate_after = created_at + 72 * 3600
-        expires_at = created_at + 365 * 24 * 3600
+        verify_until = created_at + 182 * 24 * 3600 # 182 days (6 months) - this is the max lifetime for tokens signed with this key
+        signing_deactivate_after = created_at + 72 * 3600 # 72 hours
+        expires_at = created_at + 365 * 24 * 3600 # 1 year
 
         public_jwk = self._public_key_to_jwk(public_pem, key_id, alg, verify_until)
 
@@ -261,13 +250,12 @@ class RsaSigningKeysManager:
             public_jwk=public_jwk,
         )
 
+
     def _instantiate_from_DB(self) -> None:
         """Load the latest active key from the DB into self.signing_keys."""
         latest_key = self._load_latest_key()
-        private_key = self._decrypt_private_key(
-            latest_key.private_pem, self.secret_password
-        )
-        public_key = self._public_key_init(private_key)
+        private_key = self._decrypt_private_key(latest_key.private_pem, self.secret_password)
+        public_key = private_key.public_key()
 
         self.signing_keys = RsaSigningKeys(
             key_id=latest_key.key_id,
@@ -353,7 +341,7 @@ class RsaSigningKeysManager:
         private_key = self._decrypt_private_key(
             record.private_pem, self.secret_password
         )
-        public_key = self._public_key_init(private_key)
+        public_key = private_key.public_key()
 
         return RsaSigningKeys(
             key_id=record.key_id,

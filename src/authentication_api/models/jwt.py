@@ -21,6 +21,13 @@ if TYPE_CHECKING:
     from src.authentication_api.models.signing_keys import RsaSigningKeysDB
     from src.authentication_api.models.user import UserDB
 
+def token_expiry() -> int:
+    """Default expiry time for access tokens (6 minutes)."""
+    return int(time.time()) + 360  # 6 minutes
+
+def refresh_token_expiry() -> int:
+    """Default expiry time for refresh tokens (181 days)."""
+    return int(time.time()) + 3600 * 24 * 181  # 181 days
 
 # -------------------- domain exceptions --------------------
 
@@ -49,7 +56,7 @@ class JwtRefreshPayload(BaseModel):
     jwt_id: str
     algorithm: str = Field(default="EdDSA")
     created_at: int = Field(default_factory=lambda: int(time.time()))
-    expires_at: int = Field(default_factory=lambda: int(time.time()) + 160 * 24 * 3600)
+    expires_at: int = Field(default_factory=refresh_token_expiry)
 
 
 class JwtRefreshDB(db.Model):
@@ -67,9 +74,7 @@ class JwtRefreshDB(db.Model):
     created_at: Mapped[int] = mapped_column(
         Integer, nullable=False, default=lambda: int(time.time())
     )
-    expires_at: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=lambda: int(time.time()) + 3600
-    )
+    expires_at: Mapped[int] = mapped_column(Integer, nullable=False, default=refresh_token_expiry) # 181 days for refresh tokens
 
     user: Mapped["UserDB"] = relationship("UserDB", back_populates="jwt_refresh_tokens")
     signing_key: Mapped["RsaSigningKeysDB"] = relationship("RsaSigningKeysDB")
@@ -93,7 +98,7 @@ class Jwtpayload(BaseModel):
     id: str = Field(default_factory=lambda: os.urandom(32).hex())
     algorithm: str = Field(default="EdDSA")
     created_at: int = Field(default_factory=lambda: int(time.time()))
-    expires_at: int = Field(default_factory=lambda: int(time.time()) + 3600)
+    expires_at: int = Field(default_factory=token_expiry) # 6 minutes for access tokens
 
 
 # -------------------- handler --------------------
