@@ -19,7 +19,7 @@ Flask_Authentication_API is responsible for:
 
 The service enables backend APIs to verify authentication locally without tight coupling to the authentication database.
 
-**Please check out the future plans as well [Future Plans & Roadmap](docs\FUTURE_PLANS.md)**
+**Please check out the future plans as well [Future Plans & Roadmap](docs/FUTURE_PLANS.md)**
 
 ---
 
@@ -89,7 +89,7 @@ Characteristics:
 
 On the first request after startup, it requests the active key from the database. If none exists, it generates a new key pair and stores it. This ensures that there is always an active signing key available for token issuance.
 
-![Register Flow](docs\images\Register_Flow.png)
+![Register Flow](docs/images/Register_Flow.png)
 
 ---
 
@@ -97,7 +97,7 @@ On the first request after startup, it requests the active key from the database
 
 If the signing key is not active or invalid, the `KeyManager` will automatically generate a new key pair and update the database. This allows for seamless key rotation.
 
-![Token Refresh Flow](docs\images\Token_Refresh_Flow.png)
+![Token Refresh Flow](docs/images/Token_Refresh_Flow.png)
 
 ---
 
@@ -105,7 +105,7 @@ If the signing key is not active or invalid, the `KeyManager` will automatically
 
 Backend services verify tokens locally using public keys.
 
-![Backend Verification Flow](docs\images\Backend_Verification_Flow.png)
+![Backend Verification Flow](docs/images/Backend_Verification_Flow.png)
 
 ## [**Click here for Interactable Diagrams**](https://app.zenuml.com?id=item-quPYrCPJkT&share-token=1e4f5be3bea603b97fff622ec9ebb5e9&v=50719599c453ea6bdbebf338a5356fc2)
 
