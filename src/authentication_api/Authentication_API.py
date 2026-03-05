@@ -14,7 +14,7 @@ from src.authentication_api.models.jwt import (
     RefreshTokenInvalid,
     TokenStorageError,
 )
-from src.authentication_api.models.signing_keys import RsaSigningKeysManager
+from src.authentication_api.models.signing_keys import SigningKeysManager
 from src.authentication_api.models.user import UserDB, UserSchema, PepperHandler
 
 """Flask application factory for the authentication API.
@@ -81,7 +81,7 @@ def create_app() -> Flask:
     migrate.init_app(app, db)
 
     secret_password = extract_password()
-    key_manager = RsaSigningKeysManager(secret_password)
+    key_manager = SigningKeysManager(secret_password)
     jwt_handler = JWTHandler(key_manager)
     pepper_handler = PepperHandler()
 
@@ -207,7 +207,8 @@ def create_app() -> Flask:
 
             new_user = UserDB()
             new_user.username = user_data.username
-            new_user.email = user_data.email
+            if user_data.email is not None:
+                new_user.email = user_data.email
             new_user.set_password(user_data.password, pepper_handler)
 
             db.session.add(new_user)

@@ -1,6 +1,8 @@
-from typing import Annotated
-import hashlib 
+import base64
+import hashlib
 import os
+from typing import Annotated, Optional
+
 from argon2 import PasswordHasher
 from flask_login import UserMixin
 from pydantic import BaseModel, Field
@@ -19,7 +21,7 @@ class UserDB(UserMixin, db.Model):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
-    email: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    email: Mapped[str] = mapped_column(String(120), unique=True, nullable=True)
     created_at: Mapped[str] = mapped_column(DateTime, server_default=func.now())
 
     _password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -76,19 +78,22 @@ class UserSchema(BaseModel):
         str,
         Field(..., min_length=4, pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9_]*[A-Za-z0-9])?$"),
     ]
-    email: Annotated[str, Field(..., pattern=r"^[^@]+@[^@]+\.[^@]+$")]
     password: Annotated[str, Field(..., min_length=8)]
+    email: Annotated[Optional[str], Field(..., pattern=r"^[^@]+@[^@]+\.[^@]+$")] = None
 
 class PepperHandler:
     def __init__(self):
-        items = os.getenv("PEPPER", "default_pepper_value").split(":-:-:")
-        self.pepper_id = items[0].encode("utf-8")
+        items = os.getenv("PEPPER", f"default_id:----:default_pepper_value").split(":----:")
+        if len(items) != 2:
+            raise ValueError(f"PEPPER must be in format 'id:----:pepper', got: {os.getenv('PEPPER')}")
+        self.pepper_id = items[0]
         self.PEPPER = items[1].encode("utf-8")
     
-    def pepper(self, password: str) -> bytes:
-        # stable bytes input
+    def pepper(self, password: str) -> str:
+
+        # stable bytes input for hashing, encoded as base64 for string representation
         hash_input = hashlib.sha256(
             password.encode("utf-8") + self.PEPPER
         ).digest()
-        hash = self.pepper_id + b":-:-:" + hash_input
-        return hash
+        hash_bytes = self.pepper_id.encode("utf-8") + b":----:" + hash_input
+        return base64.b64encode(hash_bytes).decode("utf-8")

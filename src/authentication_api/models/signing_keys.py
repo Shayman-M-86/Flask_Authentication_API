@@ -39,10 +39,10 @@ class SigningKeyDBError(SigningKeyError):
 # -------------------- SQLAlchemy model --------------------
 
 
-class RsaSigningKeysDB(db.Model):
+class SigningKeysDB(db.Model):
     """SQLAlchemy model storing Ed25519 signing key material and metadata."""
 
-    __tablename__ = "rsa_signing_keys"
+    __tablename__ = "signing_keys"
     key_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     private_pem: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     public_pem: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
@@ -54,24 +54,24 @@ class RsaSigningKeysDB(db.Model):
     signing_deactivate_after: Mapped[int] = mapped_column(Integer, nullable=False)
     public_jwk: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
-    def db_entry(self, rsakeys: "RsaSigningKeys") -> None:
-        """Populate this DB record from a RsaSigningKeys value object."""
-        self.key_id = rsakeys.key_id
-        self.private_pem = rsakeys.private_pem
-        self.public_pem = rsakeys.public_pem
-        self.alg = rsakeys.alg
-        self.is_active = rsakeys.is_active
-        self.created_at = rsakeys.created_at
-        self.expires_at = rsakeys.expires_at
-        self.verify_until = rsakeys.verify_until
-        self.signing_deactivate_after = rsakeys.signing_deactivate_after
-        self.public_jwk = rsakeys.public_jwk
+    def db_entry(self, signing_keys: "SigningKeys") -> None:
+        """Populate this DB record from a SigningKeys value object."""
+        self.key_id = signing_keys.key_id
+        self.private_pem = signing_keys.private_pem
+        self.public_pem = signing_keys.public_pem
+        self.alg = signing_keys.alg
+        self.is_active = signing_keys.is_active
+        self.created_at = signing_keys.created_at
+        self.expires_at = signing_keys.expires_at
+        self.verify_until = signing_keys.verify_until
+        self.signing_deactivate_after = signing_keys.signing_deactivate_after
+        self.public_jwk = signing_keys.public_jwk
 
 
 # -------------------- Pydantic model --------------------
 
 
-class RsaSigningKeys(BaseModel):
+class SigningKeys(BaseModel):
     """In-memory representation of an Ed25519 signing key pair and metadata."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -94,7 +94,7 @@ class RsaSigningKeys(BaseModel):
 # -------------------- manager --------------------
 
 
-class RsaSigningKeysManager:
+class SigningKeysManager:
     """Create, persist, load, and rotate Ed25519 signing keys."""
 
     def __init__(self, secret_password: str):
@@ -138,7 +138,7 @@ class RsaSigningKeysManager:
         return {
             "kty": "OKP",
             "crv": "Ed25519",
-            "x": RsaSigningKeysManager._b64url(public_pem),
+            "x": SigningKeysManager._b64url(public_pem),
             "kid": key_id,
             "use": "sig",
             "alg": alg,
@@ -172,13 +172,13 @@ class RsaSigningKeysManager:
     # ---------- DB ----------
 
     @staticmethod
-    def _load_latest_key() -> RsaSigningKeysDB:
+    def _load_latest_key() -> SigningKeysDB:
         """Return the most recently created active signing key from the DB."""
         try:
             latest_key = (
-                db.session.query(RsaSigningKeysDB)
-                .filter(RsaSigningKeysDB.is_active.is_(True))
-                .order_by(RsaSigningKeysDB.created_at.desc())
+                db.session.query(SigningKeysDB)
+                .filter(SigningKeysDB.is_active.is_(True))
+                .order_by(SigningKeysDB.created_at.desc())
                 .first()
             )
         except SQLAlchemyError as e:
@@ -194,7 +194,7 @@ class RsaSigningKeysManager:
         """Persist the current signing_keys instance as a new DB record."""
         try:
             existing_key = (
-                db.session.query(RsaSigningKeysDB)
+                db.session.query(SigningKeysDB)
                 .filter_by(key_id=self.signing_keys.key_id)
                 .first()
             )
@@ -203,7 +203,7 @@ class RsaSigningKeysManager:
                     f"Key with ID {self.signing_keys.key_id} already exists."
                 )
 
-            new_key = RsaSigningKeysDB()
+            new_key = SigningKeysDB()
             new_key.db_entry(self.signing_keys)
             db.session.add(new_key)
             db.session.commit()
@@ -235,7 +235,7 @@ class RsaSigningKeysManager:
 
         public_jwk = self._public_key_to_jwk(public_pem, key_id, alg, verify_until)
 
-        self.signing_keys = RsaSigningKeys(
+        self.signing_keys = SigningKeys(
             key_id=key_id,
             private_key=private_key,
             public_key=public_key,
@@ -257,7 +257,7 @@ class RsaSigningKeysManager:
         private_key = self._decrypt_private_key(latest_key.private_pem, self.secret_password)
         public_key = private_key.public_key()
 
-        self.signing_keys = RsaSigningKeys(
+        self.signing_keys = SigningKeys(
             key_id=latest_key.key_id,
             private_key=private_key,
             public_key=public_key,
@@ -287,8 +287,8 @@ class RsaSigningKeysManager:
         try:
             self.signing_keys.is_active = False
             db.session.execute(
-                update(RsaSigningKeysDB)
-                .where(RsaSigningKeysDB.key_id == self.signing_keys.key_id)
+                update(SigningKeysDB)
+                .where(SigningKeysDB.key_id == self.signing_keys.key_id)
                 .values(is_active=False)
             )
             db.session.commit()
@@ -320,7 +320,7 @@ class RsaSigningKeysManager:
             log.warning("Failed to load signing keys (%s). Generating new keys.", e)
             self._generate_new_keys()
 
-    def get_current_signing_key(self) -> RsaSigningKeys:
+    def get_current_signing_key(self) -> SigningKeys:
         """Return the in-memory active signing key, loading/rotating as needed."""
         if not hasattr(self, "signing_keys"):
             log.warning("No signing keys in memory. Initiating.")
@@ -328,12 +328,12 @@ class RsaSigningKeysManager:
         self.check_key_rotation()
         return self.signing_keys
 
-    def get_signing_key_by_id(self, key_id: str) -> RsaSigningKeys:
+    def get_signing_key_by_id(self, key_id: str) -> SigningKeys:
         """Fetch and decrypt a specific signing key from the DB by its ID."""
         try:
-            record = db.session.query(RsaSigningKeysDB).filter_by(key_id=key_id).first()
-        except SQLAlchemyError as e:
-            raise SigningKeyDBError(f"DB error while fetching key {key_id}: {e}") from e
+            record = db.session.query(SigningKeysDB).filter_by(key_id=key_id).first()
+        except SQLAlchemyError:
+            raise SigningKeyDBError(f"DB error while fetching key {key_id}.")
 
         if not record:
             raise SigningKeyNotFound(f"No signing key found with ID {key_id}.")
@@ -343,7 +343,7 @@ class RsaSigningKeysManager:
         )
         public_key = private_key.public_key()
 
-        return RsaSigningKeys(
+        return SigningKeys(
             key_id=record.key_id,
             private_key=private_key,
             public_key=public_key,

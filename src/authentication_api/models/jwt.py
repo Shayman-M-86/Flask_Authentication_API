@@ -10,15 +10,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.authentication_api.extensions import db
-from src.authentication_api.models.signing_keys import (
-    RsaSigningKeys,
-    RsaSigningKeysManager,
-)
+from src.authentication_api.models.signing_keys import (SigningKeys,
+                                                        SigningKeysManager)
 
 log = getLogger(__name__)
 
 if TYPE_CHECKING:
-    from src.authentication_api.models.signing_keys import RsaSigningKeysDB
+    from src.authentication_api.models.signing_keys import SigningKeysDB
     from src.authentication_api.models.user import UserDB
 
 def token_expiry() -> int:
@@ -67,7 +65,7 @@ class JwtRefreshDB(db.Model):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     signature_id: Mapped[str] = mapped_column(
-        ForeignKey("rsa_signing_keys.key_id"), nullable=False
+        ForeignKey("signing_keys.key_id"), nullable=False
     )
     jwt_id: Mapped[str] = mapped_column(String(64), nullable=False)
     algorithm: Mapped[str] = mapped_column(String(20), nullable=False, default="EdDSA")
@@ -77,7 +75,7 @@ class JwtRefreshDB(db.Model):
     expires_at: Mapped[int] = mapped_column(Integer, nullable=False, default=refresh_token_expiry) # 181 days for refresh tokens
 
     user: Mapped["UserDB"] = relationship("UserDB", back_populates="jwt_refresh_tokens")
-    signing_key: Mapped["RsaSigningKeysDB"] = relationship("RsaSigningKeysDB")
+    signing_key: Mapped["SigningKeysDB"] = relationship("SigningKeysDB", foreign_keys=[signature_id])
 
     def entry(self, payload: JwtRefreshPayload) -> None:
         """Populate this DB row from a JwtRefreshPayload instance."""
@@ -107,14 +105,14 @@ class Jwtpayload(BaseModel):
 class JWTHandler:
     """Issue, persist, verify, and refresh JWT access and refresh tokens."""
 
-    def __init__(self, key_manager: RsaSigningKeysManager):
+    def __init__(self, key_manager: SigningKeysManager):
         """Initialize with a signing key manager used to fetch keys."""
         self.key_manager = key_manager
 
     # ---- create tokens ----
 
     @staticmethod
-    def _create_token(user_id: int, signing_key: RsaSigningKeys) -> tuple[str, str]:
+    def _create_token(user_id: int, signing_key: SigningKeys) -> tuple[str, str]:
         """Create a signed access JWT and return (token, jwt_id)."""
         payload = Jwtpayload(user_id=user_id, signature_id=signing_key.key_id)
         token = jwt.encode(
@@ -127,7 +125,7 @@ class JWTHandler:
 
     @staticmethod
     def _create_refresh_token(
-        user_id: int, signing_key: RsaSigningKeys, jwt_id: str
+        user_id: int, signing_key: SigningKeys, jwt_id: str
     ) -> str:
         """Create, store, and return a signed refresh token for the given user/JWT."""
         payload = JwtRefreshPayload(
@@ -209,7 +207,7 @@ class JWTHandler:
         """Verify the cryptographic signature of a refresh token using its key."""
         # key manager should raise if not found; treat as invalid token
         try:
-            signing_key: RsaSigningKeys = self.key_manager.get_signing_key_by_id(
+            signing_key: SigningKeys = self.key_manager.get_signing_key_by_id(
                 db_entry.signature_id
             )
         except Exception as e:
@@ -326,3 +324,5 @@ class JWTHandler:
         db_entry = self.refresh_token_verify(refresh_token)
         self.verify_signature(refresh_token, db_entry)
         return db_entry.user_id
+
+
