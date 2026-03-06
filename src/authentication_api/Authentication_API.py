@@ -274,5 +274,11 @@ def create_app() -> Flask:
         except Exception:
             log.exception("Unexpected error returning key by kid")
             return jsonify({"error": "Server error"}), 500
+        
+    
+    @app.errorhandler(404)
+    def not_found(e):
+        """Return JSON 404 error instead of HTML."""
+        return jsonify({"error": "Not found"}), 404
 
     return app

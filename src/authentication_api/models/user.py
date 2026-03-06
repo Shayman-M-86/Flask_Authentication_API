@@ -83,7 +83,7 @@ class UserSchema(BaseModel):
 
 class PepperHandler:
     def __init__(self):
-        items = os.getenv("PEPPER", f"default_id:----:default_pepper_value").split(":----:")
+        items = os.getenv("PEPPER", "default_id:----:default_pepper_value").split(":----:")
         if len(items) != 2:
             raise ValueError(f"PEPPER must be in format 'id:----:pepper', got: {os.getenv('PEPPER')}")
         self.pepper_id = items[0]
