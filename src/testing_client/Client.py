@@ -83,7 +83,7 @@ class AuthClient:
         self.tokens = None
         return data
 
-    def logout_all(self, user_id: int) -> Dict[str, Any]:
+    def logout_all(self, sub: int) -> Dict[str, Any]:
         """Logout all sessions for a user."""
         r = self.session.post(
             f"{self.base_url}/logout_all",
@@ -214,28 +214,28 @@ def main() -> None:
         fail(f"jwt header -> {e}")
         failed = True
 
-    # 4) Extract user_id (for /health/<int:user>)
-    user_id: Optional[int] = None
+    # 4) Extract sub (for /health/<int:user>)
+    sub: Optional[int] = None
     try:
         payload = decode_jwt_payload(tokens.access_token)
-        uid = payload.get("user_id", payload.get("sub"))
+        uid = payload.get("sub", payload.get("sub"))
         if uid is None:
-            raise ValueError("Token payload missing user_id (or sub)")
-        user_id = int(uid)
-        ok(f"token payload -> user_id={user_id}")
+            raise ValueError("Token payload missing sub (or sub)")
+        sub = int(uid)
+        ok(f"token payload -> sub={sub}")
     except Exception as e:
         fail(f"token payload -> {e}")
         failed = True
 
     # 5) Test the app endpoint /health/<int:user>
-    if user_id is not None:
+    if sub is not None:
         try:
-            url = f"{app_base}/health/{user_id}"
+            url = f"{app_base}/health/{sub}"
             data = client._get_json(url, headers=client.auth_headers())
             value = data.values()
             ok(f"app GET {url} -> {value}")
         except AuthClientError as e:
-            fail(f"app /health/{user_id} -> {e}")
+            fail(f"app /health/{sub} -> {e}")
             failed = True
 
     # 6) Refresh (should rotate)
@@ -303,8 +303,8 @@ def main() -> None:
             1. Register a test user (idempotent; treats existing user as success).
             2. Log in and obtain access/refresh tokens.
             3. Decode and validate JWT header (presence of kid and alg).
-            4. Decode payload and extract user_id.
-            5. Call the protected app's /health/<user_id> endpoint with Bearer auth.
+            4. Decode payload and extract sub.
+            5. Call the protected app's /health/<sub> endpoint with Bearer auth.
             6. Refresh tokens and assert both access and refresh are rotated.
             7. Logout and verify that using the old refresh token fails.
             8. Log in again, call logout_all, and verify the old refresh token fails.
@@ -313,9 +313,9 @@ def main() -> None:
         """
     refresh_to_test2 = client.tokens.refresh_token if client.tokens else None
 
-    if user_id is not None:
+    if sub is not None:
         try:
-            res = client.logout_all(user_id)
+            res = client.logout_all(sub)
             ok(f"logout_all -> {res.get('message', res)}")
         except AuthClientError as e:
             fail(f"logout_all -> {e}")

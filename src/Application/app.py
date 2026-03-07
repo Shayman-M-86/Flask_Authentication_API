@@ -48,7 +48,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @requires_auth
     def health_check():
         claims = get_current_claims()
-        message = f"Hello, user {claims.user_id}! Your token is valid."
+        message = f"Hello, user {claims.sub}! Your token is valid."
         return jsonify(
             {"success": True, "message": f"API is healthy. Payload: {message}"}
         ), 200
@@ -60,7 +60,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         return jsonify(
             {
                 "success": True,
-                "message": f"API is healthy. Payload: {claims.user_id}, ID: {user}",
+                "message": f"API is healthy. Payload: {claims.sub}, ID: {user}",
             }
         ), 200
 

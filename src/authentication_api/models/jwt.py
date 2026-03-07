@@ -48,13 +48,13 @@ class RefreshTokenInvalid(JWTHandlerError):
 class JwtRefreshPayload(BaseModel):
     """Pydantic payload model for persisted refresh tokens."""
 
-    id: str = Field(default_factory=lambda: os.urandom(32).hex())
-    user_id: int
-    signature_id: str
-    jwt_id: str
-    algorithm: str = Field(default="EdDSA")
-    created_at: int = Field(default_factory=lambda: int(time.time()))
-    expires_at: int = Field(default_factory=refresh_token_expiry)
+    rid: str = Field(default_factory=lambda: os.urandom(32).hex()) # unique refresh token ID for DB lookup
+    sub: int
+    kid: str
+    tid: str
+    alg: str = Field(default="EdDSA")
+    iat: int = Field(default_factory=lambda: int(time.time()))
+    exp: int = Field(default_factory=refresh_token_expiry)
 
 
 class JwtRefreshDB(db.Model):
@@ -62,41 +62,41 @@ class JwtRefreshDB(db.Model):
 
     __tablename__ = "jwt_refresh"
 
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    signature_id: Mapped[str] = mapped_column(
+    rid: Mapped[str] = mapped_column(String(64), primary_key=True)
+    sub: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    kid: Mapped[str] = mapped_column(
         ForeignKey("signing_keys.key_id"), nullable=False
     )
-    jwt_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    algorithm: Mapped[str] = mapped_column(String(20), nullable=False, default="EdDSA")
-    created_at: Mapped[int] = mapped_column(
+    tid: Mapped[str] = mapped_column(String(64), nullable=False)
+    alg: Mapped[str] = mapped_column(String(20), nullable=False, default="EdDSA")
+    iat: Mapped[int] = mapped_column(
         Integer, nullable=False, default=lambda: int(time.time())
     )
-    expires_at: Mapped[int] = mapped_column(Integer, nullable=False, default=refresh_token_expiry) # 181 days for refresh tokens
+    exp: Mapped[int] = mapped_column(Integer, nullable=False, default=refresh_token_expiry) # 181 days for refresh tokens
 
     user: Mapped["UserDB"] = relationship("UserDB", back_populates="jwt_refresh_tokens")
-    signing_key: Mapped["SigningKeysDB"] = relationship("SigningKeysDB", foreign_keys=[signature_id])
+    signing_key: Mapped["SigningKeysDB"] = relationship("SigningKeysDB", foreign_keys=[kid])
 
     def entry(self, payload: JwtRefreshPayload) -> None:
         """Populate this DB row from a JwtRefreshPayload instance."""
-        self.id = payload.id
-        self.user_id = payload.user_id
-        self.signature_id = payload.signature_id
-        self.jwt_id = payload.jwt_id
-        self.algorithm = payload.algorithm
-        self.created_at = payload.created_at
-        self.expires_at = payload.expires_at
+        self.rid = payload.rid # unique refresh token ID for lookup
+        self.sub = payload.sub # user ID for association
+        self.kid = payload.kid # signing key ID for association
+        self.tid = payload.tid # token ID for consistency checks
+        self.alg = payload.alg # algorithm for verification
+        self.iat = payload.iat # issued at timestamp
+        self.exp = payload.exp # expiry timestamp
 
 
 class Jwtpayload(BaseModel):
     """Pydantic payload model for access JWTs."""
 
-    user_id: int
-    signature_id: str
-    id: str = Field(default_factory=lambda: os.urandom(32).hex())
-    algorithm: str = Field(default="EdDSA")
-    created_at: int = Field(default_factory=lambda: int(time.time()))
-    expires_at: int = Field(default_factory=token_expiry) # 6 minutes for access tokens
+    sub: int
+    kid: str
+    tid: str = Field(default_factory=lambda: os.urandom(32).hex())
+    alg: str = Field(default="EdDSA")
+    iat: int = Field(default_factory=lambda: int(time.time()))
+    exp: int = Field(default_factory=token_expiry) # 6 minutes for access tokens
 
 
 # -------------------- handler --------------------
@@ -112,32 +112,32 @@ class JWTHandler:
     # ---- create tokens ----
 
     @staticmethod
-    def _create_token(user_id: int, signing_key: SigningKeys) -> tuple[str, str]:
-        """Create a signed access JWT and return (token, jwt_id)."""
-        payload = Jwtpayload(user_id=user_id, signature_id=signing_key.key_id)
+    def _create_token(sub: int, signing_key: SigningKeys) -> tuple[str, str]:
+        """Create a signed access JWT and return (token, tid)."""
+        payload = Jwtpayload(sub=sub, kid=signing_key.key_id)
         token = jwt.encode(
             payload.model_dump(),
             signing_key.private_key,
-            algorithm=payload.algorithm,
+            algorithm=payload.alg,
             headers={"kid": signing_key.key_id},
         )
-        return token, payload.id
+        return token, payload.tid
 
     @staticmethod
     def _create_refresh_token(
-        user_id: int, signing_key: SigningKeys, jwt_id: str
+        sub: int, signing_key: SigningKeys, tid: str
     ) -> str:
         """Create, store, and return a signed refresh token for the given user/JWT."""
         payload = JwtRefreshPayload(
-            user_id=user_id,
-            signature_id=signing_key.key_id,
-            jwt_id=jwt_id,
+            sub=sub,
+            kid=signing_key.key_id,
+            tid=tid,
         )
 
         refresh_token = jwt.encode(
             payload.model_dump(),
             signing_key.private_key,
-            algorithm=payload.algorithm,
+            algorithm=payload.alg,
             headers={"kid": signing_key.key_id},
         )
 
@@ -153,11 +153,11 @@ class JWTHandler:
 
         return refresh_token
 
-    def create_new_tokens(self, user_id: int) -> tuple[str, str]:
+    def create_new_tokens(self, sub: int) -> tuple[str, str]:
         """Mint a new access token and refresh token pair for a user."""
         signing_key = self.key_manager.get_current_signing_key()
-        token, jwt_id = self._create_token(user_id, signing_key)
-        refresh_token = self._create_refresh_token(user_id, signing_key, jwt_id)
+        token, tid = self._create_token(sub, signing_key)
+        refresh_token = self._create_refresh_token(sub, signing_key, tid)
         return token, refresh_token
 
     # ---- verify refresh token ----
@@ -175,14 +175,14 @@ class JWTHandler:
     def refresh_token_verify(refresh_token: str) -> JwtRefreshDB:
         """Validate DB presence/consistency and expiry of a refresh token."""
         payload = JWTHandler._extract_unverified_payload(refresh_token)
-        token_id = payload.get("id")
+        token_id = payload.get("rid")
 
         if not token_id:
-            raise RefreshTokenInvalid("Refresh token missing 'id'")
+            raise RefreshTokenInvalid("Refresh token missing 'rid'")
 
         try:
             db_entry: JwtRefreshDB | None = (
-                db.session.query(JwtRefreshDB).filter_by(id=token_id).first()
+                db.session.query(JwtRefreshDB).filter_by(rid=token_id).first()
             )
         except SQLAlchemyError as e:
             log.exception("DB error while looking up refresh token")
@@ -194,11 +194,11 @@ class JWTHandler:
             raise RefreshTokenInvalid("Refresh token not found in database")
 
         # Basic DB vs payload consistency checks
-        if db_entry.signature_id != payload.get("signature_id"):
-            raise RefreshTokenInvalid("Refresh token signature_id mismatch")
-        if db_entry.jwt_id != payload.get("jwt_id"):
-            raise RefreshTokenInvalid("Refresh token jwt_id mismatch")
-        if db_entry.expires_at <= int(time.time()):
+        if db_entry.kid != payload.get("kid"):
+            raise RefreshTokenInvalid("Refresh token kid mismatch")
+        if db_entry.tid != payload.get("tid"):
+            raise RefreshTokenInvalid("Refresh token tid mismatch")
+        if db_entry.exp <= int(time.time()):
             raise RefreshTokenInvalid("Refresh token expired")
 
         return db_entry
@@ -208,7 +208,7 @@ class JWTHandler:
         # key manager should raise if not found; treat as invalid token
         try:
             signing_key: SigningKeys = self.key_manager.get_signing_key_by_id(
-                db_entry.signature_id
+                db_entry.kid
             )
         except Exception as e:
             # keep it strict: if you can't find key, token can't be trusted
@@ -218,9 +218,9 @@ class JWTHandler:
             jwt.decode(
                 refresh_token,
                 signing_key.public_key,
-                algorithms=[db_entry.algorithm],
+                algorithms=[db_entry.alg],
                 options={
-                    "require": ["expires_at", "created_at"]
+                    "require": ["exp", "iat"]
                 },  # optional: enforce if you add them
             )
         except jwt.ExpiredSignatureError as e:
@@ -239,7 +239,7 @@ class JWTHandler:
 
         # mint new tokens
         try:
-            new_tokens = self.create_new_tokens(db_entry.user_id)
+            new_tokens = self.create_new_tokens(db_entry.sub)
         except TokenStorageError:
             # already domain-specific
             raise
@@ -258,10 +258,10 @@ class JWTHandler:
 
         return new_tokens
 
-    def revoke_all_for_user(self, user_id: int) -> None:
+    def revoke_all_for_user(self, sub: int) -> None:
         """Revoke all refresh tokens for a user, e.g. on password change."""
         try:
-            db.session.query(JwtRefreshDB).filter_by(user_id=user_id).delete()
+            db.session.query(JwtRefreshDB).filter_by(sub=sub).delete()
             db.session.commit()
         except SQLAlchemyError as e:
             db.session.rollback()
@@ -272,10 +272,10 @@ class JWTHandler:
         """Revoke a refresh token by its token string, e.g. on logout with token."""
         try:
             payload = self._extract_unverified_payload(refresh_token)
-            token_id = payload.get("id")
+            token_id = payload.get("rid")
             if not token_id:
-                raise ValueError("Refresh token missing 'id' claim")
-            db.session.query(JwtRefreshDB).filter_by(id=token_id).delete()
+                raise ValueError("Refresh token missing 'rid' claim")
+            db.session.query(JwtRefreshDB).filter_by(rid=token_id).delete()
             db.session.commit()
         except ValueError as e:
             log.warning(f"Attempted to revoke refresh token with invalid payload: {e}")
@@ -285,10 +285,10 @@ class JWTHandler:
             log.exception("Failed to revoke refresh token by token")
             raise TokenStorageError("Failed to revoke refresh token") from e
 
-    def revoke_all_for_key(self, signature_id: str) -> None:
+    def revoke_all_for_key(self, kid: str) -> None:
         """Revoke all refresh tokens issued with a specific signing key, e.g. on key rotation."""
         try:
-            db.session.query(JwtRefreshDB).filter_by(signature_id=signature_id).delete()
+            db.session.query(JwtRefreshDB).filter_by(kid=kid).delete()
             db.session.commit()
         except SQLAlchemyError as e:
             db.session.rollback()
@@ -300,18 +300,18 @@ class JWTHandler:
     def revoke_token_by_id(self, token_id: str) -> None:
         """Revoke a specific refresh token by its ID, e.g. on logout."""
         try:
-            db.session.query(JwtRefreshDB).filter_by(id=token_id).delete()
+            db.session.query(JwtRefreshDB).filter_by(rid=token_id).delete()
             db.session.commit()
         except SQLAlchemyError as e:
             db.session.rollback()
-            log.exception("Failed to revoke refresh token by id")
+            log.exception("Failed to revoke refresh token by rid")
             raise TokenStorageError("Failed to revoke refresh token") from e
 
-    def revoke_refresh_token_by_limit(self, user_id: int, limit: int) -> None:
+    def revoke_refresh_token_by_limit(self, sub: int, limit: int) -> None:
         """Revoke a limited number of refresh tokens for a user."""
         try:
-            db.session.query(JwtRefreshDB).filter_by(user_id=user_id).order_by(
-                JwtRefreshDB.created_at.asc()
+            db.session.query(JwtRefreshDB).filter_by(sub=sub).order_by(
+                JwtRefreshDB.iat.asc()
             ).limit(limit).delete()
             db.session.commit()
         except SQLAlchemyError as e:
@@ -323,6 +323,6 @@ class JWTHandler:
         """Verify a refresh token and return the associated user ID, e.g. for logout_all."""
         db_entry = self.refresh_token_verify(refresh_token)
         self.verify_signature(refresh_token, db_entry)
-        return db_entry.user_id
+        return db_entry.sub
 
 

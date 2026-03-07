@@ -32,12 +32,12 @@ def _b64url_decode(s: str) -> bytes:
 class JWTClaims:
     """Strongly-typed subset of JWT claims used by the application."""
 
-    user_id: int
-    signature_id: str
+    sub: int
+    kid: str
     id: str
-    algorithm: str
-    created_at: int
-    expires_at: int
+    alg: str
+    iat: int
+    exp: int
 
 
 _G_CLAIMS_KEY = "jwt_claims"
@@ -68,7 +68,7 @@ class JWKSKeyProvider:
         self.cache_ttl = cache_ttl
         self._keys: dict[
             str, tuple[Ed25519PublicKey, int]
-        ] = {}  # kid -> (key, expires_at)
+        ] = {}  # kid -> (key, exp)
 
     def get(self, kid: str) -> Ed25519PublicKey:
         """Return a public key for the given kid, refreshing cache if needed."""
@@ -166,12 +166,12 @@ class RequiresAuth:
     def require(
         self,
         *,
-        match_user_id: bool = False,
-        route_param: str = "user_id",
+        match_sub: bool = False,
+        route_param: str = "sub",
     ) -> Callable[[ViewFunc], ViewFunc]:
         """Return a decorator enforcing authentication and optional user-id match.
 
-        When ``match_user_id`` is True, the claim ``user_id`` must equal the
+        When ``match_sub`` is True, the claim ``sub`` must equal the
         route parameter identified by ``route_param`` or the request is
         rejected with 403.
         """
@@ -181,10 +181,10 @@ class RequiresAuth:
             def wrapper(*args: Any, **kwargs: Any) -> Any:
                 claims = self._authenticate_and_store()
 
-                if match_user_id:
+                if match_sub:
                     if route_param not in kwargs:
                         abort(400, description=f"Route param '{route_param}' not found")
-                    if str(claims.user_id) != str(kwargs[route_param]):
+                    if str(claims.sub) != str(kwargs[route_param]):
                         abort(403, description="Forbidden")
                 return f(*args, **kwargs)
 
@@ -218,7 +218,7 @@ class RequiresAuth:
                 token,
                 key=public_key,
                 algorithms=self.algorithms,
-                options={"verify_exp": False},  # you use expires_at, not exp
+                options={"verify_exp": False},  # you use exp, not exp
             )
         except jwt.InvalidTokenError:
             abort(401, description="Invalid token")
@@ -231,12 +231,12 @@ class RequiresAuth:
     def _validate_payload(self, payload: dict[str, Any]) -> JWTClaims:
         """Validate payload structure and custom expiry, returning JWTClaims."""
         required = (
-            "user_id",
-            "signature_id",
+            "sub",
+            "kid",
             "id",
-            "algorithm",
-            "created_at",
-            "expires_at",
+            "alg",
+            "iat",
+            "exp",
         )
         missing = [k for k in required if payload.get(k) is None]
         if missing:
@@ -244,17 +244,17 @@ class RequiresAuth:
 
         try:
             claims = JWTClaims(
-                user_id=int(payload["user_id"]),
-                signature_id=str(payload["signature_id"]),
+                sub=int(payload["sub"]),
+                kid=str(payload["kid"]),
                 id=str(payload["id"]),
-                algorithm=str(payload["algorithm"]),
-                created_at=int(payload["created_at"]),
-                expires_at=int(payload["expires_at"]),
+                alg=str(payload["alg"]),
+                iat=int(payload["iat"]),
+                exp=int(payload["exp"]),
             )
         except Exception:
             abort(401, description="Invalid token")
 
-        if claims.expires_at <= int(time.time()):
+        if claims.exp <= int(time.time()):
             abort(401, description="Token expired")
 
         return claims

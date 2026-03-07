@@ -122,7 +122,8 @@ def create_app() -> Flask:
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         try:
-            user_id = jwt_handler.verify_from_refresh(refresh_token)
+            
+            sub = jwt_handler.verify_from_refresh(refresh_token)
         except RefreshTokenInvalid as e:
             return jsonify({"error": str(e)}), 401
         except TokenStorageError:
@@ -132,7 +133,9 @@ def create_app() -> Flask:
             return jsonify({"error": "Server error"}), 500
 
         try:
-            jwt_handler.revoke_all_for_user(user_id)
+            jwt_handler.revoke_all_for_user(
+                sub
+            )
             return jsonify({"message": "All sessions logged out successfully"}), 200
         except TokenStorageError:
             return jsonify({"error": "Database error"}), 500
