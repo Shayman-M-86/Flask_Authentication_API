@@ -32,9 +32,9 @@ def _b64url_decode(s: str) -> bytes:
 class JWTClaims:
     """Strongly-typed subset of JWT claims used by the application."""
 
-    sub: int
+    sub: str
     kid: str
-    id: str
+    tid: str
     alg: str
     iat: int
     exp: int
@@ -221,7 +221,7 @@ class RequiresAuth:
                 options={"verify_exp": False},  # you use exp, not exp
             )
         except jwt.InvalidTokenError:
-            abort(401, description="Invalid token")
+            abort(401, description="Invalid token signature")
 
         # 4) validate claims + expiry
         claims = self._validate_payload(payload)
@@ -233,26 +233,26 @@ class RequiresAuth:
         required = (
             "sub",
             "kid",
-            "id",
+            "tid",
             "alg",
             "iat",
             "exp",
         )
         missing = [k for k in required if payload.get(k) is None]
         if missing:
-            abort(401, description="Invalid token")
+            abort(401, description=f"Invalid token: missing {', '.join(missing)}")
 
         try:
             claims = JWTClaims(
-                sub=int(payload["sub"]),
+                sub=str(payload["sub"]),
                 kid=str(payload["kid"]),
-                id=str(payload["id"]),
+                tid=str(payload["tid"]),
                 alg=str(payload["alg"]),
                 iat=int(payload["iat"]),
                 exp=int(payload["exp"]),
             )
         except Exception:
-            abort(401, description="Invalid token")
+            abort(401, description="Invalid token: invalid claim types")
 
         if claims.exp <= int(time.time()):
             abort(401, description="Token expired")

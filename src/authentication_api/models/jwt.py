@@ -49,7 +49,7 @@ class JwtRefreshPayload(BaseModel):
     """Pydantic payload model for persisted refresh tokens."""
 
     rid: str = Field(default_factory=lambda: os.urandom(32).hex()) # unique refresh token ID for DB lookup
-    sub: int
+    sub: str
     kid: str
     tid: str
     alg: str = Field(default="EdDSA")
@@ -63,7 +63,7 @@ class JwtRefreshDB(db.Model):
     __tablename__ = "jwt_refresh"
 
     rid: Mapped[str] = mapped_column(String(64), primary_key=True)
-    sub: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    sub: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     kid: Mapped[str] = mapped_column(
         ForeignKey("signing_keys.key_id"), nullable=False
     )
@@ -91,7 +91,7 @@ class JwtRefreshDB(db.Model):
 class Jwtpayload(BaseModel):
     """Pydantic payload model for access JWTs."""
 
-    sub: int
+    sub: str
     kid: str
     tid: str = Field(default_factory=lambda: os.urandom(32).hex())
     alg: str = Field(default="EdDSA")
@@ -112,7 +112,7 @@ class JWTHandler:
     # ---- create tokens ----
 
     @staticmethod
-    def _create_token(sub: int, signing_key: SigningKeys) -> tuple[str, str]:
+    def _create_token(sub: str, signing_key: SigningKeys) -> tuple[str, str]:
         """Create a signed access JWT and return (token, tid)."""
         payload = Jwtpayload(sub=sub, kid=signing_key.key_id)
         token = jwt.encode(
@@ -124,9 +124,7 @@ class JWTHandler:
         return token, payload.tid
 
     @staticmethod
-    def _create_refresh_token(
-        sub: int, signing_key: SigningKeys, tid: str
-    ) -> str:
+    def _create_refresh_token(sub: str, signing_key: SigningKeys, tid: str) -> str:
         """Create, store, and return a signed refresh token for the given user/JWT."""
         payload = JwtRefreshPayload(
             sub=sub,
@@ -153,7 +151,7 @@ class JWTHandler:
 
         return refresh_token
 
-    def create_new_tokens(self, sub: int) -> tuple[str, str]:
+    def create_new_tokens(self, sub: str) -> tuple[str, str]:
         """Mint a new access token and refresh token pair for a user."""
         signing_key = self.key_manager.get_current_signing_key()
         token, tid = self._create_token(sub, signing_key)
@@ -258,7 +256,7 @@ class JWTHandler:
 
         return new_tokens
 
-    def revoke_all_for_user(self, sub: int) -> None:
+    def revoke_all_for_user(self, sub: str) -> None:
         """Revoke all refresh tokens for a user, e.g. on password change."""
         try:
             db.session.query(JwtRefreshDB).filter_by(sub=sub).delete()
@@ -307,7 +305,7 @@ class JWTHandler:
             log.exception("Failed to revoke refresh token by rid")
             raise TokenStorageError("Failed to revoke refresh token") from e
 
-    def revoke_refresh_token_by_limit(self, sub: int, limit: int) -> None:
+    def revoke_refresh_token_by_limit(self, sub: str, limit: int) -> None:
         """Revoke a limited number of refresh tokens for a user."""
         try:
             db.session.query(JwtRefreshDB).filter_by(sub=sub).order_by(
@@ -319,7 +317,7 @@ class JWTHandler:
             log.exception("Failed to revoke refresh tokens by limit")
             raise TokenStorageError("Failed to revoke refresh tokens by limit") from e
 
-    def verify_from_refresh(self, refresh_token: str) -> int:
+    def verify_from_refresh(self, refresh_token: str) -> str:
         """Verify a refresh token and return the associated user ID, e.g. for logout_all."""
         db_entry = self.refresh_token_verify(refresh_token)
         self.verify_signature(refresh_token, db_entry)

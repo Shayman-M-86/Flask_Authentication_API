@@ -1,12 +1,13 @@
 import base64
 import hashlib
+from uuid import uuid4
 import os
 from typing import Annotated, Optional
 
 from argon2 import PasswordHasher
 from flask_login import UserMixin
 from pydantic import BaseModel, Field
-from sqlalchemy import CheckConstraint, DateTime, Integer, String, func
+from sqlalchemy import CheckConstraint, DateTime, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.authentication_api.extensions import db
@@ -19,7 +20,7 @@ class UserDB(UserMixin, db.Model):
     """SQLAlchemy user table with password hashing and refresh-token relation."""
     
     __tablename__ = "users"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[str] = mapped_column(String(100), primary_key=True, default=lambda: str(uuid4()))
     username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     email: Mapped[str] = mapped_column(String(120), unique=True, nullable=True)
     created_at: Mapped[str] = mapped_column(DateTime, server_default=func.now())

@@ -44,6 +44,7 @@ def require_service_password() -> None:
     provided = request.headers.get("X-API-Key")
     if not expected or provided != expected:
         # keep it generic
+        print(f"Unauthorized access attempt with API key: {provided} (expected: {expected})")
         raise PermissionError("Unauthorized service")
 
 

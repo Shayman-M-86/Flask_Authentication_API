@@ -83,7 +83,7 @@ class AuthClient:
         self.tokens = None
         return data
 
-    def logout_all(self, sub: int) -> Dict[str, Any]:
+    def logout_all(self, sub: str) -> Dict[str, Any]:
         """Logout all sessions for a user."""
         r = self.session.post(
             f"{self.base_url}/logout_all",
@@ -215,13 +215,13 @@ def main() -> None:
         failed = True
 
     # 4) Extract sub (for /health/<int:user>)
-    sub: Optional[int] = None
+    sub: Optional[str] = None
     try:
         payload = decode_jwt_payload(tokens.access_token)
         uid = payload.get("sub", payload.get("sub"))
         if uid is None:
             raise ValueError("Token payload missing sub (or sub)")
-        sub = int(uid)
+        sub = str(uid)
         ok(f"token payload -> sub={sub}")
     except Exception as e:
         fail(f"token payload -> {e}")

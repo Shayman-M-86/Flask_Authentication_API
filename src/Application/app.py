@@ -53,9 +53,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             {"success": True, "message": f"API is healthy. Payload: {message}"}
         ), 200
 
-    @app.route("/health/<int:user>", methods=["GET"])
+    @app.route("/health/<string:user>", methods=["GET"])
     @requires_auth
-    def health_check_with_id(user: int):
+    def health_check_with_id(user: str):
         claims = get_current_claims()
         return jsonify(
             {
@@ -63,5 +63,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 "message": f"API is healthy. Payload: {claims.sub}, ID: {user}",
             }
         ), 200
+        
+    @app.errorhandler(401)
+    def unauthorized_error(error):
+        return jsonify({"success": False, "message": f"Unauthorized: {error}"}), 401
 
     return app
